@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::ops::Deref;
 use std::mem::MaybeUninit;
+use std::ptr::write;
 use crate::risc_v::*;
 
 /*
@@ -1752,6 +1753,15 @@ impl<const NUM_REGISTERS: usize> RegisterFile<NUM_REGISTERS> {
             out_b
         }
     }
+
+    pub fn set_write_inputs(&mut self, write_data: PortID, write_select: PortID, write_enable: PortID) {
+        self.de_mux_in.selection_input = write_select;
+        self.de_mux_in.input = write_enable;
+
+        for register in &mut self.registers {
+            register.input = write_data;
+        }
+    }
 }
 
 #[test]
@@ -2027,6 +2037,9 @@ pub struct IDStage {
     Pipeline registers
     */
 
+    /// IR register for storing current instruction
+    pub reg_ir: Register,
+
     /// Next program counter
     pub reg_npc: Register,
 
@@ -2098,6 +2111,7 @@ impl IDStage {
         let reg_imm_j = Register::new(port_collection.clone(), sign_extend.out_j_type, String::from("id_reg_imm_j"));
 
         let reg_rd = Register::new(port_collection.clone(), reg_shift_rd.output_port, String::from("id_reg_rd"));
+        let reg_ir = Register::new(port_collection.clone(), if_stage.reg_ir.output_port, String::from("id_ir"));
 
         Self {
             reg_shift_rd,
@@ -2106,6 +2120,7 @@ impl IDStage {
             reg_c_x0,
             rf,
             sign_extend,
+            reg_ir,
             reg_npc,
             reg_rd,
             reg_ra,
@@ -2133,6 +2148,7 @@ impl Component for IDStage {
         self.sign_extend.process_cycle();
 
         // Pipeline registers
+        self.reg_ir.process_cycle();
         self.reg_npc.process_cycle();
         self.reg_rd.process_cycle();
         self.reg_ra.process_cycle();
@@ -2216,6 +2232,9 @@ pub struct EXStage {
     Pipeline Registers
      */
 
+    /// IR register for storing current instruction
+    pub reg_ir: Register,
+
     /// Stores the evaluation of the branch condition
     pub reg_bt: Register,
 
@@ -2227,6 +2246,12 @@ pub struct EXStage {
 
     /// Stores the destination register
     pub reg_rd: Register,
+
+    /*
+    Pointer to port collection
+     */
+
+    pub port_collection: Rc<RefCell<PortCollection>>,
 }
 
 impl EXStage {
@@ -2326,6 +2351,7 @@ impl EXStage {
         let reg_alu = Register::new(port_collection.clone(), alu.output_port, String::from("ex_reg_alu"));
         let reg_rb = Register::new(port_collection.clone(), id_stage.reg_rb.output_port, String::from("ex_reg_rb"));
         let reg_rd = Register::new(port_collection.clone(), id_stage.reg_rd.output_port, String::from("ex_reg_rd"));
+        let reg_ir = Register::new(port_collection.clone(), id_stage.reg_ir.output_port, String::from("ex_ir"));
 
         Self {
             ctrl_reg_imm_select,
@@ -2343,14 +2369,17 @@ impl EXStage {
             comp,
             branch_test,
             alu,
+            reg_ir,
             reg_bt,
             reg_alu,
             reg_rb,
-            reg_rd
+            reg_rd,
+            port_collection
         }
     }
 
-    fn match_alu_func_code(func_3: Word, func_7: Word) -> Word {
+    /// Match function codes from a register-register instruction to an ALU operation.
+    fn match_alu_func_code_rr(func_3: Word, func_7: Word) -> Word {
         match func_7 {
             func_code_7::BASE => {
                 match func_3 {
@@ -2382,18 +2411,40 @@ impl EXStage {
         }
     }
 
+    /// Match function code(s) from a register-imm instruction to an ALU operation.
+    fn match_alu_func_code_ri(func_3: Word, func_7: Word) -> Word {
+        match func_3 {
+            func_code_3::ADDI        => ALU::OP_ADD,
+            func_code_3::SLTI        => ALU::OP_SLT,
+            func_code_3::SLTIU       => ALU::OP_SLTU,
+            func_code_3::ANDI        => ALU::OP_AND,
+            func_code_3::ORI         => ALU::OP_OR,
+            func_code_3::XORI        => ALU::OP_XOR,
+            func_code_3::SLLI        => ALU::OP_SLL,
+            func_code_3::SRLI_SRAI   => {
+                // A bit from the func 7 code determines the type of right shift
+                if func_7 & func_code_7::BASE_ALT != 0 { ALU::OP_SRA } else { ALU::OP_SRL }
+            },
+            _                        => unreachable!()
+        }
+    }
+
     fn set_control_signals(&mut self, instruction: Word) {
         let op_code = extract_op_code(instruction) as usize;
         let (imm_select, ra_select, rb_select, alu_func, comp_mode, branch_cond, branch_taken) = match op_code {
             op_code::OP => {
                 let funct_3 = extract_funct_3(instruction);
                 let funct_7 = extract_funct_7(instruction);
-                let alu_func_code = Self::match_alu_func_code(funct_3, funct_7);
+                let alu_func_code = Self::match_alu_func_code_rr(funct_3, funct_7);
 
                 (0, Self::MUX_RA_RA, Self::MUX_RB_RB, alu_func_code, 0, 0, Self::MUX_BT_REJECT)
             }
             op_code::OP_IMM => {
-                (Self::MUX_IMM_I_TYPE, Self::MUX_RA_RA, Self::MUX_RB_IMM, 1, 0, 0, Self::MUX_BT_REJECT)
+                let funct_3 = extract_funct_3(instruction);
+                let funct_7 = extract_funct_7(instruction);
+                let alu_func_code = Self::match_alu_func_code_ri(funct_3, funct_7);
+
+                (Self::MUX_IMM_I_TYPE, Self::MUX_RA_RA, Self::MUX_RB_IMM, alu_func_code, 0, 0, Self::MUX_BT_REJECT)
             }
             op_code::LOAD => {
                 (Self::MUX_IMM_I_TYPE, Self::MUX_RA_RA, Self::MUX_RB_IMM, 1, 0, 0, Self::MUX_BT_REJECT)
@@ -2429,6 +2480,46 @@ impl EXStage {
     }
 }
 
+impl Component for EXStage {
+    fn process_cycle(&mut self) {
+        // Constants
+        self.reg_c_reject.process_cycle();
+
+        // Get current instruction
+        self.reg_ir.process_cycle();
+
+        // Set control signals
+        let instruction = self.port_collection.borrow().get_port_data(self.reg_ir.output_port);
+        self.set_control_signals(instruction);
+
+        // Push control signals
+        self.ctrl_reg_imm_select.process_cycle();
+        self.ctrl_reg_ra_select.process_cycle();
+        self.ctrl_reg_rb_select.process_cycle();
+        self.ctrl_reg_alu_func.process_cycle();
+        self.ctrl_reg_comp_mode.process_cycle();
+        self.ctrl_reg_branch_cond.process_cycle();
+        self.ctrl_reg_branch_taken.process_cycle();
+
+        // Main cycle
+        self.mux_imm_select.process_cycle();
+        self.mux_ra_select.process_cycle();
+        self.mux_rb_select.process_cycle();
+
+        self.alu.process_cycle();
+        self.comp.process_cycle();
+        self.branch_test.process_cycle();
+        self.mux_branch_taken.process_cycle();
+
+        // Pipeline registers
+        self.reg_bt.process_cycle();
+        self.reg_bt.process_cycle();
+        self.reg_alu.process_cycle();
+        self.reg_rd.process_cycle();
+        self.reg_rb.process_cycle();
+    }
+}
+
 /*
 Processor -- MEM Stage
  */
@@ -2451,6 +2542,15 @@ pub struct MEMStage {
 
     /// Stores the destination register
     pub reg_rd: Register,
+
+    /// IR register for storing current instruction
+    pub reg_ir: Register,
+
+    /*
+    Pointer to port collection
+     */
+
+    pub port_collection: Rc<RefCell<PortCollection>>,
 }
 
 impl MEMStage {
@@ -2473,6 +2573,7 @@ impl MEMStage {
         let reg_mem = Register::new(port_collection.clone(), dmem.output_port, String::from("mem_reg_mem"));
         let reg_alu = Register::new(port_collection.clone(), ex_stage.reg_alu.output_port, String::from("mem_reg_alu"));
         let reg_rd = Register::new(port_collection.clone(), ex_stage.reg_rd.output_port, String::from("mem_reg_rd"));
+        let reg_ir = Register::new(port_collection.clone(), ex_stage.reg_ir.output_port, String::from("mem_ir"));
 
         Self {
             ctrl_reg_write_enable,
@@ -2480,8 +2581,75 @@ impl MEMStage {
             dmem,
             reg_mem,
             reg_alu,
-            reg_rd
+            reg_rd,
+            reg_ir,
+            port_collection
         }
+    }
+
+    fn set_control_signals(&mut self, instruction: Word) {
+        let op_code = extract_op_code(instruction) as usize;
+
+        // We use MEM_LEN_BYTE when the memory read result is discarded to avoid
+        // unaligned access errors from garbage inputs. (Byte addresses are always aligned)
+
+        let (write_enable, len_mode) = match op_code {
+            op_code::OP => {
+                (0, MEM_LEN_BYTE)
+            }
+            op_code::OP_IMM => {
+                (0, MEM_LEN_BYTE)
+            }
+            op_code::LOAD => {
+                (0, MEM_LEN_WORD)
+            }
+            op_code::STORE => {
+                (1, MEM_LEN_WORD)
+            }
+            op_code::JAL => {
+                (0, MEM_LEN_BYTE)
+            }
+            op_code::JALR => {
+                (0, MEM_LEN_BYTE)
+            }
+            op_code::BRANCH => {
+                (0, MEM_LEN_BYTE)
+            }
+            op_code::LUI => {
+                (0, MEM_LEN_BYTE)
+            }
+            op_code::AUIPC => {
+                (0, MEM_LEN_BYTE)
+            }
+            _ => { unreachable!() }
+        };
+
+        // Set control signals
+        self.ctrl_reg_write_enable.constant_value = write_enable;
+        self.ctrl_reg_len_mode.constant_value = len_mode;
+    }
+}
+
+impl Component for MEMStage {
+    fn process_cycle(&mut self) {
+        // Get current instruction
+        self.reg_ir.process_cycle();
+
+        // Set control signals
+        let instruction = self.port_collection.borrow().get_port_data(self.reg_ir.output_port);
+        self.set_control_signals(instruction);
+
+        // Push control signals
+        self.ctrl_reg_len_mode.process_cycle();
+        self.ctrl_reg_write_enable.process_cycle();
+
+        // Main cycle
+        self.dmem.process_cycle();
+
+        // Pipeline register
+        self.reg_alu.process_cycle();
+        self.reg_mem.process_cycle();
+        self.reg_rd.process_cycle();
     }
 }
 
@@ -2498,9 +2666,24 @@ pub struct WBStage {
 
     /// Switches between ALU output and MEM output
     pub mux_value: Mux<2>,
+
+    /// Holds the destination register of the write back
+    pub reg_rd: Register,
+
+    /// IR register for storing current instruction
+    pub reg_ir: Register,
+
+    /*
+    Pointer to port collection
+     */
+
+    pub port_collection: Rc<RefCell<PortCollection>>,
 }
 
 impl WBStage {
+    pub const MUX_VALUE_MEM: Word = 0;
+    pub const MUX_VALUE_ALU: Word = 1;
+
     pub fn new(port_collection: Rc<RefCell<PortCollection>>, mem_stage: &MEMStage) -> Self {
 
         let ctrl_reg_value_select = ConstantRegister::new(port_collection.clone(), 0, String::from("wb_ctrl_reg_value_select"));
@@ -2513,11 +2696,75 @@ impl WBStage {
             String::from("wb_mux_value")
         );
 
+        let reg_rd = Register::new(port_collection.clone(), mem_stage.reg_rd.output_port, String::from("wb_rd"));
+        let reg_ir = Register::new(port_collection.clone(), mem_stage.reg_ir.output_port, String::from("wb_ir"));
+
         Self {
             ctrl_reg_value_select,
             ctrl_reg_write_enable,
-            mux_value
+            mux_value,
+            reg_rd,
+            reg_ir,
+            port_collection
         }
+    }
+
+    fn set_control_signals(&mut self, instruction: Word) {
+        let op_code = extract_op_code(instruction) as usize;
+
+        let (value_select, write_enable) = match op_code {
+            op_code::OP => {
+                (Self::MUX_VALUE_ALU, 1)
+            }
+            op_code::OP_IMM => {
+                (Self::MUX_VALUE_ALU, 1)
+            }
+            op_code::LOAD => {
+                (Self::MUX_VALUE_MEM, 1)
+            }
+            op_code::STORE => {
+                (Self::MUX_VALUE_ALU, 0)
+            }
+            op_code::JAL => {
+                todo!()
+            }
+            op_code::JALR => {
+                todo!()
+            }
+            op_code::BRANCH => {
+                todo!()
+            }
+            op_code::LUI => {
+                todo!()
+            }
+            op_code::AUIPC => {
+                todo!()
+            }
+            _ => { unreachable!() }
+        };
+
+        // Set control signals
+        self.ctrl_reg_value_select.constant_value = value_select;
+        self.ctrl_reg_write_enable.constant_value = write_enable;
+    }
+}
+
+impl Component for WBStage {
+    fn process_cycle(&mut self) {
+        // Get current instruction
+        self.reg_ir.process_cycle();
+
+        // Set control signals
+        let instruction = self.port_collection.borrow().get_port_data(self.reg_ir.output_port);
+        self.set_control_signals(instruction);
+
+        // Push control signals
+        self.ctrl_reg_write_enable.process_cycle();
+        self.ctrl_reg_value_select.process_cycle();
+
+        // Main cycle
+        self.reg_rd.process_cycle();
+        self.mux_value.process_cycle();
     }
 }
 
@@ -2552,9 +2799,18 @@ impl Processor {
         if_stage.mux.selection_input = ex_stage.reg_bt.output_port;
 
         // Write back
-        id_stage.rf.in_write_data = wb_stage.mux_value.output_port;
-        id_stage.rf.in_write_select = ex_stage.reg_rd.output_port;
-        id_stage.rf.in_write_enable = wb_stage.ctrl_reg_write_enable.output_port;
+        id_stage.rf.set_write_inputs(
+            wb_stage.mux_value.output_port,
+            wb_stage.reg_rd.output_port,
+            wb_stage.ctrl_reg_write_enable.output_port
+        );
+
+        // Initialize instruction registers with NOP
+        port_collection.borrow_mut().set_port_data(if_stage.reg_ir.output_port, NOP);
+        port_collection.borrow_mut().set_port_data(id_stage.reg_ir.output_port, NOP);
+        port_collection.borrow_mut().set_port_data(ex_stage.reg_ir.output_port, NOP);
+        port_collection.borrow_mut().set_port_data(mem_stage.reg_ir.output_port, NOP);
+        port_collection.borrow_mut().set_port_data(wb_stage.reg_ir.output_port, NOP);
 
         Self {
             port_collection,
@@ -2567,8 +2823,42 @@ impl Processor {
     }
 }
 
+impl Component for Processor {
+    fn process_cycle(&mut self) {
+        self.wb_stage.process_cycle();
+        self.mem_stage.process_cycle();
+        self.ex_stage.process_cycle();
+        self.id_stage.process_cycle();
+        self.if_stage.process_cycle();
+    }
+}
+
 #[test]
 pub fn test_processor() {
-    let processor = Processor::new();
+    println!("hallo1");
 
+    let mut processor = Processor::new();
+
+    let inst = NOP | (30 << 20) | 1 << 7;
+    let inst_bytes = inst.to_be_bytes();
+
+    println!("{:b}", inst);
+
+    processor.if_stage.imem.content[0] = inst_bytes[0];
+    processor.if_stage.imem.content[1] = inst_bytes[1];
+    processor.if_stage.imem.content[2] = inst_bytes[2];
+    processor.if_stage.imem.content[3] = inst_bytes[3];
+
+    for _ in 0..7 {
+        processor.process_cycle();
+
+        println!("if_stage: {}", processor.port_collection.borrow().get_port_data(processor.if_stage.reg_ir.output_port));
+        println!("id_stage: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.reg_ir.output_port));
+        println!("ex_stage: {}", processor.port_collection.borrow().get_port_data(processor.ex_stage.reg_ir.output_port));
+        println!("mem_stage: {}", processor.port_collection.borrow().get_port_data(processor.mem_stage.reg_ir.output_port));
+        println!("wb_stage: {}", processor.port_collection.borrow().get_port_data(processor.wb_stage.reg_ir.output_port));
+
+        println!("reg_1: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[1].output_port));
+        println!();
+    }
 }

@@ -6,7 +6,6 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use crate::circuit::{PortCollection};
 use crate::components::{Component, IFStage};
-use std::ops::Deref;
 
 fn main() {
 

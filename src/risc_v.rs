@@ -64,6 +64,17 @@ pub const CPU_WIDTH: usize = 32;
 pub type Word = u32;
 pub type SWord = i32;
 
+/*
+Instruction Shortcuts
+ */
+
+// ADDI x0, x0, 0
+pub const NOP: Word = 0 | (func_code_3::ADDI << 12) | (op_code::OP_IMM as Word);
+
+/*
+Masks
+ */
+
 // Opcode
 pub const MASK_OPCODE: Word = 0b_00000000_00000000_00000000_01111111;
 
@@ -101,7 +112,7 @@ pub fn extract_imm_i_type(instruction: Word) -> Word {
 /// Extracts and sign-extends the immediate field from a given S-type instruction word.
 pub fn extract_imm_s_type(instruction: Word) -> Word {
     let imm_value_lower = (instruction & MASK_IMM_S_TYPE_LOWER) >> 7;
-    let imm_value_upper = (instruction & MASK_IMM_S_TYPE_LOWER) >> 25;
+    let imm_value_upper = (instruction & MASK_IMM_S_TYPE_UPPER) >> 25;
     let imm_value = (imm_value_upper << 5) | imm_value_lower;
 
     // The sign bit is always bit 31
