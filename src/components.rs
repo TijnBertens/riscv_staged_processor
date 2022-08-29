@@ -867,7 +867,7 @@ impl Component for ALU {
             Self::OP_MUL => {
                 in_a.wrapping_mul(in_b)
             }
-            _ => { !unreachable!() }
+            _ => { unreachable!() }
         };
 
         port_collection.set_port_data(self.output_port, output_value);
