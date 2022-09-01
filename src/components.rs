@@ -191,6 +191,11 @@ pub const MEM_LEN_BYTE: Word = 0;
 pub const MEM_LEN_SHORT: Word = 1;
 pub const MEM_LEN_WORD: Word = 2;
 
+/// Read-only memory consisting of MEM_SIZE individually addressable bytes. The memory takes an
+/// address as input, along with a length input that determines the addressing mode (byte, short, or
+/// word).
+///
+/// Reads are performed unconditionally every cycle.
 pub struct RMemory {
     pub address_input: PortID,
     pub length_input: PortID,
@@ -202,6 +207,13 @@ pub struct RMemory {
     pub content: [u8; MEM_SIZE],
 }
 
+/// Read/Write memory consisting of MEM_SIZE individually addressable bytes. Like a read-only memory,
+/// the r/w memory takes an address and length input, where the latter determines the type of addressing
+/// (byte, short, or word). Additionally, the r/w memory takes a data input and write enable input.
+/// If the write enable input is high, the data input is written to the memory at the input address.
+///
+/// Writes are performed on the first half of the cycle, while reads are performed on the second half.
+/// Reads are performed unconditionally every cycle.
 pub struct RWMemory {
     pub address_input: PortID,
     pub data_input: PortID,
@@ -388,6 +400,7 @@ impl RWMemory {
 Functional units
  */
 
+/// Simple adder. An adder takes two inputs and provides their sum as output.
 pub struct Adder {
     pub input_a: PortID,
     pub input_b: PortID,
@@ -397,6 +410,10 @@ pub struct Adder {
     pub name: String,
 }
 
+/// Simple comparator unit. A comparator takes two numerical inputs, along with a mode input that switches
+/// between signed and unsigned comparisons. Two flags are outputs: whether the inputs are equal,
+/// and whether the first input is strictly smaller than the other. All different branch conditions
+/// can be built out of these two simple flags.
 pub struct Comparator {
     pub input_a: PortID,
     pub input_b: PortID,
@@ -407,6 +424,12 @@ pub struct Comparator {
     pub name: String,
 }
 
+/// Used for testing branch conditions. A branch tester takes the output flags from a comparator unit,
+/// along with a function code describing the branch condition to be tested on the comparator output.
+///
+/// This branch tester only supports the conditions described in the RISC V spec, which are: BEQ,
+/// BNE, BLT, BLTU, BGE, BGEU. Other conditions (BLE and BGT) can be simulated by swapping the
+/// operands of a BGE or BLT condition respectively.
 pub struct BranchTester {
     pub input_comp: PortID,
     pub input_func: PortID,
@@ -416,6 +439,8 @@ pub struct BranchTester {
     pub name: String,
 }
 
+/// Arithmetic logic unit, used for all arithmetic operations. An ALU takes two numeric inputs, along
+/// with a function code describing which operations should be applied to the numeric inputs.
 pub struct ALU {
     pub input_a: PortID,
     pub input_b: PortID,
@@ -695,6 +720,9 @@ impl ALU {
 Switching
  */
 
+/// A multiplexer that switches between NUM_INPUTS inputs, based on a secondary selection input. Let
+/// *i* be the number that is encoded by the selection input, then the MUX outputs the value of the
+/// *i^th* input.
 pub struct Mux<const NUM_INPUTS: usize> {
     pub selection_input: PortID,
     pub inputs: [PortID; NUM_INPUTS],
@@ -705,10 +733,14 @@ pub struct Mux<const NUM_INPUTS: usize> {
     pub name: String,
 }
 
-pub struct DeMux<const NUM_INPUTS: usize> {
+/// A de-multiplexer is the opposite of a multiplexer. It takes a single input, and forwards it to
+/// one of NUM_OUTPUTS output channels, while forwarding *0* to the rest. A secondary selection input
+/// is used switch between outputs. Let *i* be the number that is encoded by the selection input,
+/// then the DeMUX forwards the input to the *i^th* output.
+pub struct DeMux<const NUM_OUTPUTS: usize> {
     pub selection_input: PortID,
     pub input: PortID,
-    pub outputs: [PortID; NUM_INPUTS],
+    pub outputs: [PortID; NUM_OUTPUTS],
     pub input_mask: Word,
 
     pub port_collection: Rc<RefCell<PortCollection>>,
@@ -728,16 +760,16 @@ impl<const NUM_INPUTS: usize> Component for Mux<NUM_INPUTS> {
     }
 }
 
-impl<const NUM_INPUTS: usize> Component for DeMux<NUM_INPUTS> {
+impl<const NUM_OUTPUTS: usize> Component for DeMux<NUM_OUTPUTS> {
     fn process_cycle(&mut self) {
         let mut port_collection = self.port_collection.borrow_mut();
 
         let selected_output = port_collection.get_port_data(self.selection_input) & self.input_mask;
-        assert!((selected_output as usize) < NUM_INPUTS);
+        assert!((selected_output as usize) < NUM_OUTPUTS);
 
         let input_value = port_collection.get_port_data(self.input);
 
-        for i in 0..NUM_INPUTS {
+        for i in 0..NUM_OUTPUTS {
             if i == selected_output as usize {
                 port_collection.set_port_data(self.outputs[i], input_value);
             } else {
@@ -765,15 +797,15 @@ impl<const NUM_INPUTS: usize> Mux<NUM_INPUTS> {
     }
 }
 
-impl<const NUM_INPUTS: usize> DeMux<NUM_INPUTS> {
+impl<const NUM_OUTPUTS: usize> DeMux<NUM_OUTPUTS> {
     pub fn new(port_collection: Rc<RefCell<PortCollection>>, input: PortID, selection_input: PortID, name: String) -> Self {
-        let mut output_ports = [PORT_NULL_ID; NUM_INPUTS];
+        let mut output_ports = [PORT_NULL_ID; NUM_OUTPUTS];
 
-        for i in 0..NUM_INPUTS {
+        for i in 0..NUM_OUTPUTS {
             output_ports[i] = port_collection.borrow_mut().register_port(PORT_DEFAULT_VALUE, format!("{}.out_{}", name, i));
         }
 
-        let num_selection_bits = (NUM_INPUTS as f64).log2().ceil() as u32;
+        let num_selection_bits = (NUM_OUTPUTS as f64).log2().ceil() as u32;
         let input_mask = (2_u32.pow(num_selection_bits) as Word) - 1;
 
         Self {
@@ -791,6 +823,17 @@ impl<const NUM_INPUTS: usize> DeMux<NUM_INPUTS> {
 Register File
  */
 
+/// A collection of NUM_REGISTERS register, with provided switching hardware for reading from/
+/// writing to specific registers. This specific design of register file has two inputs for reading,
+/// such that two registers can be read every cycle. It also has three inputs for writing:
+/// (1) a data input,
+/// (2) a selection input, and
+/// (3) a write enable input.
+/// When the write enable is high, the data input is written to the register selected by the
+/// selection input, allowing a single write per cycle.
+///
+/// Finally, writes are performed on the first half of the cycle, while reads are performed on the
+/// second half of the cycle. Consequently, written values are available for reads on the same cycle.
 pub struct RegisterFile<const NUM_REGISTERS: usize> {
     pub registers: [GuardedRegister; NUM_REGISTERS],
 
@@ -909,6 +952,11 @@ impl<const NUM_REGISTERS: usize> RegisterFile<NUM_REGISTERS> {
 Misc
  */
 
+/// Used for extracting and sign-extending immediate values directly from instructions. Since the
+/// instruction is not yet decoded, values for all different immediate encodings are provided in
+/// the output.
+///
+/// TODO: It would be possible to determine which immediate type is required by simply looking at the opcode of an instruction, which can be done in ID.
 pub struct ImmSignExtender {
     pub input: PortID,
     pub out_i_type: PortID,
@@ -921,6 +969,17 @@ pub struct ImmSignExtender {
     pub name: String,
 }
 
+/// Used for detecting Read-after-Write hazards in the pipeline. If either the EX stage, or MEM stage
+/// is busy producing a value that is needed by the instruction currently in the ID stage, the CPU
+/// must stall the IF and ID stages until the value reaches the WB stage.
+///
+/// The interlock unit takes the instruction words that are going to be processed in the the ID, EX,
+/// and MEM stages in the coming cycle. It outputs the inverted version of a stall flag, signalling
+/// that the IF and ID stages must stall. This inversion is chosen such that the output can be used
+/// as an input to guarded pipeline registers directly.
+///
+/// Internally, the unit uses a timer that keeps track of how many cycles a stall should take, and
+/// when it is cleared.
 pub struct InterlockUnit {
     pub in_id_instr: PortID,
     pub in_ex_instr: PortID,
