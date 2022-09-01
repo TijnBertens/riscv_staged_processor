@@ -1,10 +1,8 @@
-use crate::circuit::{PortID, PortCollection, PORT_NULL_ID, PORT_DEFAULT_VALUE, PORT_NULL_VALUE, Port};
+use crate::circuit::*;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::ops::Deref;
 use std::mem::MaybeUninit;
-use std::ptr::write;
-use crate::risc_v::*;
+use crate::isa::*;
 use crate::assembler;
 
 /*
@@ -25,7 +23,7 @@ pub struct Register {
     pub output_port: PortID,
 
     pub port_collection: Rc<RefCell<PortCollection>>,
-    pub name: String
+    pub name: String,
 }
 
 /// Register that only commits input when an enable signal is given.
@@ -57,7 +55,7 @@ pub struct BitSelectionRegister<const START_BIT: usize, const LEN: usize> {
     pub output_port: PortID,
 
     pub port_collection: Rc<RefCell<PortCollection>>,
-    pub name: String
+    pub name: String,
 }
 
 impl Component for Register {
@@ -108,7 +106,7 @@ impl ConstantRegister {
             constant_value: value,
             output_port: port_id,
             port_collection,
-            name
+            name,
         }
     }
 }
@@ -121,7 +119,7 @@ impl Register {
             input: input_port,
             output_port: output_port_id,
             port_collection,
-            name
+            name,
         }
     }
 
@@ -144,7 +142,7 @@ impl GuardedRegister {
             input: input_port,
             output_port: output_port_id,
             port_collection,
-            name
+            name,
         }
     }
 
@@ -169,7 +167,7 @@ impl<const START_BIT: usize, const LEN: usize> BitSelectionRegister<START_BIT, L
             input: input_port,
             output_port: output_port_id,
             port_collection,
-            name
+            name,
         }
     }
 
@@ -183,127 +181,11 @@ impl<const START_BIT: usize, const LEN: usize> BitSelectionRegister<START_BIT, L
     }
 }
 
-#[test]
-///
-/// Tests a constant register, normal register, and guarded register (a, b, c) in series.
-/// One extra constant register (e) is added for the enable line to the guarded register.
-///
-fn test_registers() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let a_value: Word = 88;
-    let e_value: Word = 0;
-
-    let mut a = ConstantRegister::new(Rc::clone(&port_collection), a_value, String::from("a"));
-    let mut b = Register::new(Rc::clone(&port_collection), a.output_port, String::from("b"));
-
-    let mut e = ConstantRegister::new(Rc::clone(&port_collection), e_value, String::from("e"));
-    let mut c = GuardedRegister::new(Rc::clone(&port_collection), b.output_port, e.output_port, String::from("c"));
-
-    a.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(a.output_port), a_value);
-
-        assert_eq!(port_collection.get_port_data(b.input), a_value);
-        assert_eq!(port_collection.get_port_data(b.output_port), PORT_DEFAULT_VALUE);
-
-        assert_eq!(port_collection.get_port_data(c.input), PORT_DEFAULT_VALUE);
-        assert_eq!(port_collection.get_port_data(c.input_enable), PORT_DEFAULT_VALUE);
-        assert_eq!(port_collection.get_port_data(c.output_port), PORT_DEFAULT_VALUE);
-
-        assert_eq!(port_collection.get_port_data(e.output_port), e_value);
-    }
-
-    b.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(a.output_port), a_value);
-
-        assert_eq!(port_collection.get_port_data(b.input), a_value);
-        assert_eq!(port_collection.get_port_data(b.output_port), a_value);
-
-        assert_eq!(port_collection.get_port_data(c.input), a_value);
-        assert_eq!(port_collection.get_port_data(c.input_enable), PORT_DEFAULT_VALUE);
-        assert_eq!(port_collection.get_port_data(c.output_port), PORT_DEFAULT_VALUE);
-
-        assert_eq!(port_collection.get_port_data(e.output_port), e_value);
-    }
-
-    c.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(a.output_port), a_value);
-
-        assert_eq!(port_collection.get_port_data(b.input), a_value);
-        assert_eq!(port_collection.get_port_data(b.output_port), a_value);
-
-        assert_eq!(port_collection.get_port_data(c.input), a_value);
-        assert_eq!(port_collection.get_port_data(c.input_enable), e_value);
-        assert_eq!(port_collection.get_port_data(c.output_port), PORT_DEFAULT_VALUE);
-
-        assert_eq!(port_collection.get_port_data(e.output_port), e_value);
-    }
-
-    let e_value = 1;
-    e.constant_value = 1;
-    e.process_cycle();
-    c.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(a.output_port), a_value);
-
-        assert_eq!(port_collection.get_port_data(b.input), a_value);
-        assert_eq!(port_collection.get_port_data(b.output_port), a_value);
-
-        assert_eq!(port_collection.get_port_data(c.input), a_value);
-        assert_eq!(port_collection.get_port_data(c.input_enable), e_value);
-        assert_eq!(port_collection.get_port_data(c.output_port), a_value);
-
-        assert_eq!(port_collection.get_port_data(e.output_port), e_value);
-    }
-}
-
-#[test]
-/// Tests whether a bit selection register correctly selects and shifts bits from its input.
-pub fn test_bit_selection_register() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    const CONST_VALUE: Word = 0b_101101;
-    const NUM_VAL_BITS: usize = 6;
-    const OFFSET: usize = 5;
-
-    let mut c = ConstantRegister::new(Rc::clone(&port_collection), CONST_VALUE << OFFSET,String::from("c"));
-    let mut s = BitSelectionRegister::<OFFSET, NUM_VAL_BITS>::new(Rc::clone(&port_collection), c.output_port, String::from("c"));
-
-    c.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-        assert_eq!(PORT_DEFAULT_VALUE, port_collection.get_port_data(s.output_port));
-    }
-
-    s.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-        assert_eq!(CONST_VALUE, port_collection.get_port_data(s.output_port));
-    }
-}
-
 /*
 Memory
  */
 
-const MEM_SIZE: usize = 65536;
+pub const MEM_SIZE: usize = 65536;
 
 pub const MEM_LEN_BYTE: Word = 0;
 pub const MEM_LEN_SHORT: Word = 1;
@@ -428,7 +310,7 @@ impl RMemory {
             output_port: output_port_id,
             port_collection,
             name,
-            content: [0u8; MEM_SIZE]
+            content: [0u8; MEM_SIZE],
         }
     }
 
@@ -441,7 +323,7 @@ impl RMemory {
             output_port: output_port_id,
             port_collection,
             name,
-            content: mem.clone()
+            content: mem.clone(),
         }
     }
 
@@ -468,7 +350,7 @@ impl RWMemory {
             output_port: output_port_id,
             port_collection,
             name,
-            content: [0u8; MEM_SIZE]
+            content: [0u8; MEM_SIZE],
         }
     }
 
@@ -483,7 +365,7 @@ impl RWMemory {
             output_port: output_port_id,
             port_collection,
             name,
-            content: mem.clone()
+            content: mem.clone(),
         }
     }
 
@@ -502,215 +384,6 @@ impl RWMemory {
     }
 }
 
-#[test]
-/// Tests length modes and valid return values of an isolated read-only memory.
-fn test_read_only_memory() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let mut mem: [u8; MEM_SIZE] = [0u8; MEM_SIZE];
-    mem[0] = 0x0A;
-    mem[1] = 0x0B;
-    mem[2] = 0x0C;
-    mem[3] = 0x0D;
-    mem[4] = 0x02;
-    mem[5] = 0x04;
-    mem[6] = 0x06;
-    mem[7] = 0x08;
-
-    let address = 2;
-    let len_mode = MEM_LEN_BYTE;
-
-    let mut reg_addr = ConstantRegister::new(port_collection.clone(), address, String::from("reg_addr"));
-    let mut reg_len = ConstantRegister::new(port_collection.clone(), len_mode, String::from("reg_len"));
-
-    let mut memory = RMemory::new_with_mem(port_collection.clone(), reg_addr.output_port, reg_len.output_port, String::from("m"), &mem);
-
-    reg_addr.process_cycle();
-    reg_len.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(memory.address_input), address);
-        assert_eq!(port_collection.get_port_data(memory.length_input), len_mode);
-        assert_eq!(port_collection.get_port_data(memory.output_port), PORT_DEFAULT_VALUE);
-    }
-
-    memory.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(memory.address_input), address);
-        assert_eq!(port_collection.get_port_data(memory.length_input), len_mode);
-        assert_eq!(port_collection.get_port_data(memory.output_port), 0x000C);
-    }
-
-    let len_mode = MEM_LEN_SHORT;
-    reg_len.constant_value = len_mode;
-
-    reg_len.process_cycle();
-    memory.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(memory.address_input), address);
-        assert_eq!(port_collection.get_port_data(memory.length_input), len_mode);
-        assert_eq!(port_collection.get_port_data(memory.output_port), 0x0C0D);
-    }
-
-    let len_mode = MEM_LEN_WORD;
-    let address = 4;
-
-    reg_len.constant_value = len_mode;
-    reg_addr.constant_value = address;
-
-    reg_len.process_cycle();
-    reg_addr.process_cycle();
-    memory.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(memory.address_input), address);
-        assert_eq!(port_collection.get_port_data(memory.length_input), len_mode);
-        assert_eq!(port_collection.get_port_data(memory.output_port), 0x02040608);
-    }
-}
-
-#[test]
-#[should_panic]
-/// Tests whether miss-aligned short memory access throws a panic.
-fn test_read_only_memory_short_unaligned() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let address = 3;
-    let len_mode = MEM_LEN_SHORT;
-
-    let mut reg_addr = ConstantRegister::new(port_collection.clone(), address, String::from("reg_addr"));
-    let mut reg_len = ConstantRegister::new(port_collection.clone(), len_mode, String::from("reg_len"));
-
-    let mut memory = RMemory::new(port_collection.clone(), reg_addr.output_port, reg_len.output_port, String::from("m"));
-
-    reg_addr.process_cycle();
-    reg_len.process_cycle();
-    memory.process_cycle();
-}
-
-#[test]
-#[should_panic]
-/// Tests whether miss-aligned word memory access throws a panic.
-fn test_read_only_memory_word_unaligned() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let address = 3;
-    let len_mode = MEM_LEN_WORD;
-
-    let mut reg_addr = ConstantRegister::new(port_collection.clone(), address, String::from("reg_addr"));
-    let mut reg_len = ConstantRegister::new(port_collection.clone(), len_mode, String::from("reg_len"));
-
-    let mut memory = RMemory::new(port_collection.clone(), reg_addr.output_port, reg_len.output_port, String::from("m"));
-
-    reg_addr.process_cycle();
-    reg_len.process_cycle();
-    memory.process_cycle();
-}
-
-#[test]
-pub fn test_read_write_memory() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let mut mem: [u8; MEM_SIZE] = [0u8; MEM_SIZE];
-    mem[0] = 0x0A;
-    mem[1] = 0x0B;
-    mem[2] = 0x0C;
-    mem[3] = 0x0D;
-    mem[4] = 0x02;
-    mem[5] = 0x04;
-    mem[6] = 0x06;
-    mem[7] = 0x08;
-
-    let address = 4;
-    let data = 0x12344321;
-    let len_mode = MEM_LEN_WORD;
-    let write_enable = 1;
-
-    let mut reg_addr = ConstantRegister::new(port_collection.clone(), address, String::from("reg_addr"));
-    let mut reg_len = ConstantRegister::new(port_collection.clone(), len_mode, String::from("reg_len"));
-
-    let mut reg_data = ConstantRegister::new(port_collection.clone(), data, String::from("reg_data"));
-    let mut reg_w_enable = ConstantRegister::new(port_collection.clone(), write_enable, String::from("reg_w_enable"));
-
-    let mut mem = RWMemory::new_with_mem(
-        port_collection.clone(),
-        reg_addr.output_port,
-        reg_len.output_port,
-        reg_data.output_port,
-        reg_w_enable.output_port,
-        String::from("mem"),
-        &mem
-    );
-
-    reg_addr.process_cycle();
-    reg_len.process_cycle();
-    reg_data.process_cycle();
-    reg_w_enable.process_cycle();
-
-    {
-        let mut port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(mem.length_input), len_mode);
-        assert_eq!(port_collection.get_port_data(mem.address_input), address);
-        assert_eq!(port_collection.get_port_data(mem.data_input), data);
-        assert_eq!(port_collection.get_port_data(mem.write_enable_input), write_enable);
-        assert_eq!(port_collection.get_port_data(mem.output_port), PORT_DEFAULT_VALUE);
-    }
-
-    mem.process_cycle();
-
-    {
-        // Read should be the initial value
-        let mut port_collection = port_collection.borrow_mut();
-        assert_eq!(port_collection.get_port_data(mem.output_port), 0x02040608);
-
-        // Test Big Endianness
-        let data_bytes = data.to_be_bytes();
-        assert_eq!(mem.content[address as usize + 0], data_bytes[0]);
-        assert_eq!(mem.content[address as usize + 1], data_bytes[1]);
-        assert_eq!(mem.content[address as usize + 2], data_bytes[2]);
-        assert_eq!(mem.content[address as usize + 3], data_bytes[3]);
-    }
-
-    mem.process_cycle();
-
-    {
-        // Read should be the previously written value
-        let mut port_collection = port_collection.borrow_mut();
-        assert_eq!(port_collection.get_port_data(mem.output_port), data);
-    }
-
-    // Test write enable
-
-    let new_data = 0x11223344;
-    let write_enable = 0;
-
-    reg_data.constant_value = new_data;
-    reg_w_enable.constant_value = write_enable;
-
-    reg_data.process_cycle();
-    reg_w_enable.process_cycle();
-
-    mem.process_cycle();
-    mem.process_cycle();
-
-    {
-        // Read should be the previously written value
-        let mut port_collection = port_collection.borrow_mut();
-        assert_eq!(port_collection.get_port_data(mem.output_port), data);
-    }
-}
-
 /*
 Functional units
  */
@@ -721,7 +394,7 @@ pub struct Adder {
     pub output_port: PortID,
 
     pub port_collection: Rc<RefCell<PortCollection>>,
-    pub name: String
+    pub name: String,
 }
 
 pub struct Comparator {
@@ -731,7 +404,7 @@ pub struct Comparator {
     pub output_port: PortID,
 
     pub port_collection: Rc<RefCell<PortCollection>>,
-    pub name: String
+    pub name: String,
 }
 
 pub struct BranchTester {
@@ -740,7 +413,7 @@ pub struct BranchTester {
     pub output_port: PortID,
 
     pub port_collection: Rc<RefCell<PortCollection>>,
-    pub name: String
+    pub name: String,
 }
 
 pub struct ALU {
@@ -750,7 +423,7 @@ pub struct ALU {
     pub output_port: PortID,
 
     pub port_collection: Rc<RefCell<PortCollection>>,
-    pub name: String
+    pub name: String,
 }
 
 impl Component for Adder {
@@ -897,7 +570,7 @@ impl Adder {
             input_b,
             output_port: output_port_id,
             port_collection,
-            name
+            name,
         }
     }
 
@@ -921,7 +594,7 @@ impl Comparator {
     const MODE_S: Word = 0;
     const MODE_U: Word = 1;
 
-    pub fn new(port_collection: Rc<RefCell<PortCollection>>, in_a: PortID, in_b: PortID, in_mode: PortID,  name: String) -> Self {
+    pub fn new(port_collection: Rc<RefCell<PortCollection>>, in_a: PortID, in_b: PortID, in_mode: PortID, name: String) -> Self {
         let output_port_id = port_collection.borrow_mut().register_port(PORT_DEFAULT_VALUE, name.clone() + ".out");
 
         Self {
@@ -930,7 +603,7 @@ impl Comparator {
             input_mode: in_mode,
             output_port: output_port_id,
             port_collection,
-            name
+            name,
         }
     }
 
@@ -953,7 +626,7 @@ impl BranchTester {
     pub const BRANCH_REJECT: Word = 0;
     pub const BRANCH_TAKE: Word = 1;
 
-    pub fn new(port_collection: Rc<RefCell<PortCollection>>, in_comp: PortID, in_func: PortID,  name: String) -> Self {
+    pub fn new(port_collection: Rc<RefCell<PortCollection>>, in_comp: PortID, in_func: PortID, name: String) -> Self {
         let output_port_id = port_collection.borrow_mut().register_port(PORT_DEFAULT_VALUE, name.clone() + ".out");
 
         Self {
@@ -961,7 +634,7 @@ impl BranchTester {
             input_func: in_func,
             output_port: output_port_id,
             port_collection,
-            name
+            name,
         }
     }
 
@@ -1013,426 +686,8 @@ impl ALU {
             input_func: in_func,
             output_port: output_port_id,
             port_collection,
-            name
+            name,
         }
-    }
-}
-
-#[test]
-fn test_adder() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let in_a = 8;
-    let in_b = 80;
-
-    let mut reg_a = ConstantRegister::new(port_collection.clone(), in_a, String::from("reg_a"));
-    let mut reg_b = ConstantRegister::new(port_collection.clone(), in_b, String::from("reg_b"));
-
-    let mut adder = Adder::new(port_collection.clone(), reg_a.output_port, reg_b.output_port, String::from("add"));
-
-    reg_a.process_cycle();
-    reg_b.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(adder.input_a), in_a);
-        assert_eq!(port_collection.get_port_data(adder.input_b), in_b);
-        assert_eq!(port_collection.get_port_data(adder.output_port), PORT_DEFAULT_VALUE);
-    }
-
-    adder.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(adder.input_a), in_a);
-        assert_eq!(port_collection.get_port_data(adder.input_b), in_b);
-        assert_eq!(port_collection.get_port_data(adder.output_port), in_a + in_b);
-    }
-}
-
-#[test]
-pub fn test_comparator_unsigned() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    // Test LT
-
-    let in_a = 8;
-    let in_b = 80;
-    let in_mode = Comparator::MODE_U;
-
-    let mut reg_a = ConstantRegister::new(port_collection.clone(), in_a, String::from("reg_a"));
-    let mut reg_b = ConstantRegister::new(port_collection.clone(), in_b, String::from("reg_b"));
-    let mut reg_mode = ConstantRegister::new(port_collection.clone(), in_mode, String::from("reg_mode"));
-
-    let mut comp = Comparator::new(port_collection.clone(), reg_a.output_port, reg_b.output_port, reg_mode.output_port, String::from("comp"));
-
-    reg_a.process_cycle();
-    reg_b.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(comp.input_a), in_a);
-        assert_eq!(port_collection.get_port_data(comp.input_b), in_b);
-        assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
-        assert_eq!(port_collection.get_port_data(comp.output_port), PORT_DEFAULT_VALUE);
-    }
-
-    comp.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(comp.input_a), in_a);
-        assert_eq!(port_collection.get_port_data(comp.input_b), in_b);
-        assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
-        assert_eq!(port_collection.get_port_data(comp.output_port), Comparator::LT_BIT);
-    }
-
-    // Test EQ
-
-    let in_a = 80;
-    let in_b = 80;
-
-    reg_a.constant_value = in_a;
-    reg_b.constant_value = in_b;
-
-    reg_a.process_cycle();
-    reg_b.process_cycle();
-    comp.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(comp.input_a), in_a);
-        assert_eq!(port_collection.get_port_data(comp.input_b), in_b);
-        assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
-        assert_eq!(port_collection.get_port_data(comp.output_port), Comparator::EQ_BIT);
-    }
-
-    // Test GT
-
-    let in_a = 88;
-    let in_b = 80;
-
-    reg_a.constant_value = in_a;
-    reg_b.constant_value = in_b;
-
-    reg_a.process_cycle();
-    reg_b.process_cycle();
-    comp.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(comp.input_a), in_a);
-        assert_eq!(port_collection.get_port_data(comp.input_b), in_b);
-        assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
-        assert_eq!(port_collection.get_port_data(comp.output_port), 0);
-    }
-}
-
-#[test]
-pub fn test_comparator_signed() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    // Test LT
-
-    let in_a: SWord = -88;
-    let in_b: SWord = 80;
-    let in_mode = Comparator::MODE_S;
-
-    let mut reg_a = ConstantRegister::new(port_collection.clone(), in_a as Word, String::from("reg_a"));
-    let mut reg_b = ConstantRegister::new(port_collection.clone(), in_b as Word, String::from("reg_b"));
-    let mut reg_mode = ConstantRegister::new(port_collection.clone(), in_mode, String::from("reg_mode"));
-
-    let mut comp = Comparator::new(port_collection.clone(), reg_a.output_port, reg_b.output_port, reg_mode.output_port, String::from("comp"));
-
-    reg_a.process_cycle();
-    reg_b.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(comp.input_a), in_a as Word);
-        assert_eq!(port_collection.get_port_data(comp.input_b), in_b as Word);
-        assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
-        assert_eq!(port_collection.get_port_data(comp.output_port), PORT_DEFAULT_VALUE);
-    }
-
-    comp.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(comp.input_a), in_a as Word);
-        assert_eq!(port_collection.get_port_data(comp.input_b), in_b as Word);
-        assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
-        assert_eq!(port_collection.get_port_data(comp.output_port), Comparator::LT_BIT);
-    }
-
-    // Test EQ
-
-    let in_a: SWord = -80;
-    let in_b: SWord = -80;
-
-    reg_a.constant_value = in_a as Word;
-    reg_b.constant_value = in_b as Word;
-
-    reg_a.process_cycle();
-    reg_b.process_cycle();
-    comp.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(comp.input_a), in_a as Word);
-        assert_eq!(port_collection.get_port_data(comp.input_b), in_b as Word);
-        assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
-        assert_eq!(port_collection.get_port_data(comp.output_port), Comparator::EQ_BIT);
-    }
-
-    // Test GT
-
-    let in_a: SWord = 8;
-    let in_b: SWord = -80;
-
-    reg_a.constant_value = in_a as Word;
-    reg_b.constant_value = in_b as Word;
-
-    reg_a.process_cycle();
-    reg_b.process_cycle();
-    comp.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(comp.input_a), in_a as Word);
-        assert_eq!(port_collection.get_port_data(comp.input_b), in_b as Word);
-        assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
-        assert_eq!(port_collection.get_port_data(comp.output_port), 0);
-    }
-}
-
-#[test]
-pub fn test_branch_tester_signed() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let mut reg_a = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_a"));
-    let mut reg_b = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_b"));
-    let mut reg_func = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_func"));
-    let mut reg_mode = BitSelectionRegister::<2, 1>::new(port_collection.clone(), reg_func.output_port, String::from("reg_mode"));
-
-    let mut comp = Comparator::new(port_collection.clone(), reg_a.output_port, reg_b.output_port, reg_mode.output_port, String::from("comp"));
-    let mut bt = BranchTester::new(port_collection.clone(), comp.output_port, reg_func.output_port, String::from("bt"));
-
-    let a_b_pairs = [
-        (-80, 80),
-        (-8, -8),
-        (80, -80)
-    ];
-
-    let branch_matrix = [
-        // BEQ, BNE, BLT, BGE
-        [0, 1, 1, 0],
-        [1, 0, 0, 1],
-        [0, 1, 0, 1],
-    ];
-
-    // No unsigned versions
-    let func_codes = [
-        func_code_3::BEQ, func_code_3::BNE, func_code_3::BLT, func_code_3::BGE
-    ];
-
-    for i in 0..a_b_pairs.len() {
-        for j in 0..func_codes.len() {
-            let (in_a, in_b): (SWord, SWord) = a_b_pairs[i];
-            let in_func = func_codes[j];
-            let expectation = branch_matrix[i][j];
-
-            reg_a.constant_value = in_a as Word;
-            reg_b.constant_value = in_b as Word;
-            reg_func.constant_value = in_func;
-
-            reg_a.process_cycle();
-            reg_b.process_cycle();
-            reg_func.process_cycle();
-            reg_mode.process_cycle();
-            comp.process_cycle();
-            bt.process_cycle();
-
-            let port_collection = port_collection.borrow_mut();
-            assert_eq!(port_collection.get_port_data(bt.output_port), expectation);
-        }
-    }
-}
-
-#[test]
-pub fn test_branch_tester_unsigned() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let mut reg_a = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_a"));
-    let mut reg_b = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_b"));
-    let mut reg_func = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_func"));
-    let mut reg_mode = BitSelectionRegister::<2, 1>::new(port_collection.clone(), reg_func.output_port, String::from("reg_mode"));
-
-    let mut comp = Comparator::new(port_collection.clone(), reg_a.output_port, reg_b.output_port, reg_mode.output_port, String::from("comp"));
-    let mut bt = BranchTester::new(port_collection.clone(), comp.output_port, reg_func.output_port, String::from("bt"));
-
-    let a_b_pairs = [
-        (80, 88),
-        (88, 88),
-        (88, 80)
-    ];
-
-    let branch_matrix = [
-        // BEQ, BNE, BLTU, BGEU
-        [0, 1, 1, 0],
-        [1, 0, 0, 1],
-        [0, 1, 0, 1],
-    ];
-
-    // No signed versions
-    let func_codes = [
-        func_code_3::BEQ, func_code_3::BNE, func_code_3::BLTU, func_code_3::BGEU
-    ];
-
-    for i in 0..a_b_pairs.len() {
-        for j in 0..func_codes.len() {
-            let (in_a, in_b): (SWord, SWord) = a_b_pairs[i];
-            let in_func = func_codes[j];
-            let expectation = branch_matrix[i][j];
-
-            reg_a.constant_value = in_a as Word;
-            reg_b.constant_value = in_b as Word;
-            reg_func.constant_value = in_func;
-
-            reg_a.process_cycle();
-            reg_b.process_cycle();
-            reg_func.process_cycle();
-            reg_mode.process_cycle();
-            comp.process_cycle();
-            bt.process_cycle();
-
-            let port_collection = port_collection.borrow_mut();
-            assert_eq!(port_collection.get_port_data(bt.output_port), expectation);
-        }
-    }
-}
-
-#[test]
-pub fn test_alu_signed() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let mut reg_a = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_a"));
-    let mut reg_b = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_b"));
-    let mut reg_func = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_func"));
-
-    let mut alu = ALU::new(
-        port_collection.clone(),
-        reg_a.output_port,
-        reg_b.output_port,
-        reg_func.output_port,
-        String::from("alu")
-    );
-
-    let tests = [
-        // FUNC, A, B, EXPECTATION
-        (ALU::OP_ADD, 80 as SWord, 8 as SWord, 88 as SWord),
-        (ALU::OP_ADD, -88, 8, -80),
-        (ALU::OP_SUB, -80, 8, -88),
-        (ALU::OP_SUB, -88, -8, -80),
-
-        (ALU::OP_BYPASS_A, -88, -8, -88),
-        (ALU::OP_BYPASS_B, -88, -8, -8),
-
-        (ALU::OP_AND, 0b_101010, 0b_001110, 0b_001010),
-        (ALU::OP_OR, 0b_101010, 0b_001110, 0b_101110),
-        (ALU::OP_XOR, 0b_101010, 0b_001110, 0b_100100),
-
-        (ALU::OP_SLTU, 88, 80, 0),
-        (ALU::OP_SLTU, 88, 88, 0),
-        (ALU::OP_SLTU, 88, 888, 1),
-
-        (ALU::OP_MUL, -8, -8, 64),
-        (ALU::OP_MUL, -8, 8, -64),
-
-        (ALU::OP_SLL, 0b_00001100, 2, 0b_00110000),
-        (ALU::OP_SRL,  0b_00001100, 2, 0b_00000011),
-        (ALU::OP_SRA,  -8, 2, -2),
-        (ALU::OP_SRA,  8, 2, 2),
-    ];
-
-    for (func, in_a, in_b, expectation) in tests {
-        reg_a.constant_value = in_a as Word;
-        reg_b.constant_value = in_b as Word;
-        reg_func.constant_value = func;
-
-        reg_a.process_cycle();
-        reg_b.process_cycle();
-        reg_func.process_cycle();
-        alu.process_cycle();
-
-        let port_collection = port_collection.borrow_mut();
-        assert_eq!(port_collection.get_port_data(alu.output_port), expectation as Word);
-    }
-}
-
-#[test]
-pub fn test_alu_unsigned() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let mut reg_a = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_a"));
-    let mut reg_b = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_b"));
-    let mut reg_func = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_func"));
-
-    let mut alu = ALU::new(
-        port_collection.clone(),
-        reg_a.output_port,
-        reg_b.output_port,
-        reg_func.output_port,
-        String::from("alu")
-    );
-
-    let tests = [
-        // FUNC, A, B, EXPECTATION
-        (ALU::OP_ADD, 80, 8, 88),
-        (ALU::OP_SUB, 88, 8, 80),
-
-        (ALU::OP_BYPASS_A, 88, 8, 88),
-        (ALU::OP_BYPASS_B, 88, 8, 8),
-
-        (ALU::OP_AND, 0b_101010, 0b_001110, 0b_001010),
-        (ALU::OP_OR, 0b_101010, 0b_001110, 0b_101110),
-        (ALU::OP_XOR, 0b_101010, 0b_001110, 0b_100100),
-
-        (ALU::OP_SLTU, 88, 80, 0),
-        (ALU::OP_SLTU, 88, 88, 0),
-        (ALU::OP_SLTU, 88, 888, 1),
-
-        (ALU::OP_MUL, 8, 8, 64),
-
-        (ALU::OP_SLL, 0b_00001100, 2, 0b_00110000),
-        (ALU::OP_SRL,  0b_00001100, 2, 0b_00000011),
-
-        (ALU::OP_SUB,  10, 20, (-10 as SWord) as Word),  // Test underflow
-        (ALU::OP_ADD,  Word::MAX, 1, 0),                 // Test overflow
-    ];
-
-    for (func, in_a, in_b, expectation) in tests {
-        reg_a.constant_value = in_a;
-        reg_b.constant_value = in_b;
-        reg_func.constant_value = func;
-
-        reg_a.process_cycle();
-        reg_b.process_cycle();
-        reg_func.process_cycle();
-        alu.process_cycle();
-
-        let port_collection = port_collection.borrow_mut();
-        assert_eq!(port_collection.get_port_data(alu.output_port), expectation);
     }
 }
 
@@ -1447,7 +702,7 @@ pub struct Mux<const NUM_INPUTS: usize> {
     pub input_mask: Word,
 
     pub port_collection: Rc<RefCell<PortCollection>>,
-    pub name: String
+    pub name: String,
 }
 
 pub struct DeMux<const NUM_INPUTS: usize> {
@@ -1457,7 +712,7 @@ pub struct DeMux<const NUM_INPUTS: usize> {
     pub input_mask: Word,
 
     pub port_collection: Rc<RefCell<PortCollection>>,
-    pub name: String
+    pub name: String,
 }
 
 impl<const NUM_INPUTS: usize> Component for Mux<NUM_INPUTS> {
@@ -1505,7 +760,7 @@ impl<const NUM_INPUTS: usize> Mux<NUM_INPUTS> {
             output_port: output_port_id,
             input_mask,
             port_collection,
-            name
+            name,
         }
     }
 }
@@ -1527,144 +782,8 @@ impl<const NUM_INPUTS: usize> DeMux<NUM_INPUTS> {
             outputs: output_ports,
             input_mask,
             port_collection,
-            name
+            name,
         }
-    }
-}
-
-#[test]
-/// Tests an isolated mux with 2 inputs and a single bit selection line. Tests valid input selection,
-/// as well as application of the input mask.
-fn test_binary_mux() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let input_value_a = 8;
-    let input_value_b = 88;
-
-    let selection_value = 0;
-
-    let mut reg_a = ConstantRegister::new(port_collection.clone(), input_value_a, String::from("reg_a"));
-    let mut reg_b = ConstantRegister::new(port_collection.clone(), input_value_b, String::from("reg_b"));
-    let mut reg_s = ConstantRegister::new(port_collection.clone(), selection_value, String::from("reg_c"));
-
-    let mut mux = Mux::<2>::new(port_collection.clone(), &[reg_a.output_port, reg_b.output_port], reg_s.output_port, String::from("mux"));
-
-    reg_a.process_cycle();
-    reg_b.process_cycle();
-    reg_s.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(mux.inputs[0]), input_value_a);
-        assert_eq!(port_collection.get_port_data(mux.inputs[1]), input_value_b);
-        assert_eq!(port_collection.get_port_data(mux.output_port), PORT_DEFAULT_VALUE);
-    }
-
-    mux.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(mux.inputs[0]), input_value_a);
-        assert_eq!(port_collection.get_port_data(mux.inputs[1]), input_value_b);
-        assert_eq!(port_collection.get_port_data(mux.output_port), input_value_a);
-    }
-
-    let selection_value = 1;
-    reg_s.constant_value = selection_value;
-
-    reg_s.process_cycle();
-    mux.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(mux.inputs[0]), input_value_a);
-        assert_eq!(port_collection.get_port_data(mux.inputs[1]), input_value_b);
-        assert_eq!(port_collection.get_port_data(mux.output_port), input_value_b);
-    }
-
-    let selection_value = 2;
-    reg_s.constant_value = selection_value;
-
-    reg_s.process_cycle();
-    mux.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(mux.inputs[0]), input_value_a);
-        assert_eq!(port_collection.get_port_data(mux.inputs[1]), input_value_b);
-        assert_eq!(port_collection.get_port_data(mux.output_port), input_value_a);
-    }
-}
-
-#[test]
-/// Tests an isolated demux with 2 outputs and a single bit selection line. Tests valid output selection,
-/// as well as application of the input mask.
-fn test_binary_de_mux() {
-    let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let input_value = 88;
-    let selection_value = 0;
-
-    let mut reg_a = ConstantRegister::new(port_collection.clone(), input_value, String::from("reg_a"));
-    let mut reg_s = ConstantRegister::new(port_collection.clone(), selection_value, String::from("reg_s"));
-
-    let mut de_mux = DeMux::<2>::new(port_collection.clone(), reg_a.output_port, reg_s.output_port, String::from("demux"));
-
-    reg_a.process_cycle();
-    reg_s.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(de_mux.input), input_value);
-        assert_eq!(port_collection.get_port_data(de_mux.selection_input), selection_value);
-        assert_eq!(port_collection.get_port_data(de_mux.outputs[0]), PORT_DEFAULT_VALUE);
-        assert_eq!(port_collection.get_port_data(de_mux.outputs[1]), PORT_DEFAULT_VALUE);
-    }
-
-    de_mux.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(de_mux.input), input_value);
-        assert_eq!(port_collection.get_port_data(de_mux.selection_input), selection_value);
-        assert_eq!(port_collection.get_port_data(de_mux.outputs[0]), input_value);
-        assert_eq!(port_collection.get_port_data(de_mux.outputs[1]), PORT_DEFAULT_VALUE);
-    }
-
-    let selection_value = 1;
-    reg_s.constant_value = selection_value;
-
-    reg_s.process_cycle();
-    de_mux.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(de_mux.input), input_value);
-        assert_eq!(port_collection.get_port_data(de_mux.selection_input), selection_value);
-        assert_eq!(port_collection.get_port_data(de_mux.outputs[0]), PORT_DEFAULT_VALUE);
-        assert_eq!(port_collection.get_port_data(de_mux.outputs[1]), input_value);
-    }
-
-    let selection_value = 2;
-    reg_s.constant_value = selection_value;
-
-    reg_s.process_cycle();
-    de_mux.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(de_mux.input), input_value);
-        assert_eq!(port_collection.get_port_data(de_mux.selection_input), selection_value);
-        assert_eq!(port_collection.get_port_data(de_mux.outputs[0]), input_value);
-        assert_eq!(port_collection.get_port_data(de_mux.outputs[1]), PORT_DEFAULT_VALUE);
     }
 }
 
@@ -1690,7 +809,7 @@ pub struct RegisterFile<const NUM_REGISTERS: usize> {
     pub in_write_enable: PortID,
 
     pub out_a: PortID,
-    pub out_b: PortID
+    pub out_b: PortID,
 }
 
 impl<const NUM_REGISTERS: usize> Component for RegisterFile<NUM_REGISTERS> {
@@ -1711,7 +830,7 @@ impl<const NUM_REGISTERS: usize> RegisterFile<NUM_REGISTERS> {
                write_data: PortID, write_select: PortID, write_enable: PortID) -> Self {
 
         // Demux for propagating input enable signal to the gate of the proper register
-        let mut de_mux_in = DeMux::<NUM_REGISTERS>::new(port_collection.clone(), write_enable, write_select, String::from("rf_demux_in"));
+        let de_mux_in = DeMux::<NUM_REGISTERS>::new(port_collection.clone(), write_enable, write_select, String::from("rf_demux_in"));
 
         // Issue relating to the initialization of arrays with const generic size
         // https://github.com/rust-lang/rust/issues/61956
@@ -1726,7 +845,7 @@ impl<const NUM_REGISTERS: usize> RegisterFile<NUM_REGISTERS> {
                 port_collection.clone(),
                 write_data,
                 de_mux_in.outputs[i],
-                String::from(format!("rf_reg_{}", i))
+                String::from(format!("rf_reg_{}", i)),
             );
 
             registers_uninit[i].write(reg);
@@ -1748,14 +867,14 @@ impl<const NUM_REGISTERS: usize> RegisterFile<NUM_REGISTERS> {
             port_collection.clone(),
             &register_outputs,
             read_a,
-            String::from("rf_mux_out_a")
+            String::from("rf_mux_out_a"),
         );
 
         let mux_out_b = Mux::<NUM_REGISTERS>::new(
             port_collection.clone(),
             &register_outputs,
             read_b,
-            String::from("rf_mux_out_b")
+            String::from("rf_mux_out_b"),
         );
 
         let out_a = mux_out_a.output_port;
@@ -1772,7 +891,7 @@ impl<const NUM_REGISTERS: usize> RegisterFile<NUM_REGISTERS> {
             in_write_select: write_select,
             in_write_enable: write_enable,
             out_a,
-            out_b
+            out_b,
         }
     }
 
@@ -1783,101 +902,6 @@ impl<const NUM_REGISTERS: usize> RegisterFile<NUM_REGISTERS> {
         for register in &mut self.registers {
             register.input = write_data;
         }
-    }
-}
-
-#[test]
-/// Tests writing to and reading from a register file.
-fn test_rf() {
-    let mut port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-    let val_read_a = 0;
-    let val_read_b = 3;
-
-    let val_write_data = 88;
-    let val_write_select = 0;
-    let val_write_enable = 0;
-
-    let mut reg_read_a = ConstantRegister::new(port_collection.clone(), val_read_a, String::from("reg_read_a"));
-    let mut reg_read_b = ConstantRegister::new(port_collection.clone(), val_read_b, String::from("reg_read_b"));
-
-    let mut reg_write_data = ConstantRegister::new(port_collection.clone(), val_write_data, String::from("reg_write_data"));
-    let mut reg_write_select = ConstantRegister::new(port_collection.clone(), val_write_select, String::from("reg_write_select"));
-    let mut reg_write_enable = ConstantRegister::new(port_collection.clone(), val_write_enable, String::from("reg_write_enable"));
-
-    let mut rf = RegisterFile::<8>::new(
-        port_collection.clone(),
-        reg_read_a.output_port,
-        reg_read_b.output_port,
-        reg_write_data.output_port,
-        reg_write_select.output_port,
-        reg_write_enable.output_port
-    );
-
-    reg_read_a.process_cycle();
-    reg_read_b.process_cycle();
-    reg_write_data.process_cycle();
-    reg_write_select.process_cycle();
-    reg_write_enable.process_cycle();
-    rf.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(rf.out_a), PORT_DEFAULT_VALUE);
-        assert_eq!(port_collection.get_port_data(rf.out_b), PORT_DEFAULT_VALUE);
-    }
-
-    // Write data to register 0
-    let val_write_enable = 1;
-    reg_write_enable.constant_value = val_write_enable;
-
-    reg_write_enable.process_cycle();
-    rf.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(rf.out_a), val_write_data);
-        assert_eq!(port_collection.get_port_data(rf.out_b), PORT_DEFAULT_VALUE);
-    }
-
-    // Write data to register 3
-    let val_write_data = 33;
-    let val_write_select = 3;
-
-    reg_write_data.constant_value = val_write_data;
-    reg_write_select.constant_value = val_write_select;
-
-    reg_write_data.process_cycle();
-    reg_write_select.process_cycle();
-    rf.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(rf.out_a), 88);
-        assert_eq!(port_collection.get_port_data(rf.out_b), val_write_data);
-    }
-
-    // Change read registers
-
-    reg_read_a.constant_value = val_read_b;
-    reg_read_b.constant_value = 7;
-
-    reg_write_enable.constant_value = 0;
-
-    reg_read_a.process_cycle();
-    reg_read_b.process_cycle();
-    reg_write_enable.process_cycle();
-
-    rf.process_cycle();
-
-    {
-        let port_collection = port_collection.borrow_mut();
-
-        assert_eq!(port_collection.get_port_data(rf.out_a), val_write_data);
-        assert_eq!(port_collection.get_port_data(rf.out_b), PORT_DEFAULT_VALUE);
     }
 }
 
@@ -1894,7 +918,7 @@ pub struct ImmSignExtender {
     pub out_j_type: PortID,
 
     pub port_collection: Rc<RefCell<PortCollection>>,
-    pub name: String
+    pub name: String,
 }
 
 pub struct InterlockUnit {
@@ -1906,7 +930,7 @@ pub struct InterlockUnit {
     stall_timer: Word,
 
     pub port_collection: Rc<RefCell<PortCollection>>,
-    pub name: String
+    pub name: String,
 }
 
 impl Component for ImmSignExtender {
@@ -1940,7 +964,7 @@ fn check_raw_hazard(id_instr: Word, other_instr: Word) -> bool {
             let rs1 = extract_rs1(id_instr);
             let rs2 = extract_rs2(id_instr);
 
-             match op_code_other {
+            match op_code_other {
                 op_code::OP | op_code::OP_IMM | op_code::LOAD | op_code::JAL |
                 op_code::JALR | op_code::LUI | op_code::AUIPC => {
                     // Other instruction writes to register
@@ -2035,7 +1059,7 @@ impl ImmSignExtender {
             out_u_type,
             out_j_type,
             port_collection,
-            name
+            name,
         }
     }
 }
@@ -2052,1108 +1076,1042 @@ impl InterlockUnit {
             out_not_stall,
             stall_timer: 0,
             port_collection,
-            name
+            name,
         }
     }
 }
 
-#[test]
-pub fn test_check_raw_hazard() {
-    /// Creates a test case expecting no RaW hazard
-    macro_rules! expect_no_hazard {
-        ($instr_r:literal, $instr_w:literal) => {
-            assert_eq!(
-                check_raw_hazard(
-                    assembler::encode_instruction_str($instr_r).unwrap(),
-                    assembler::encode_instruction_str($instr_w).unwrap()
-                ),
-                false
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod registers {
+        use super::*;
+
+        #[test]
+        ///
+        /// Tests a constant register, normal register, and guarded register (a, b, c) in series.
+        /// One extra constant register (e) is added for the enable line to the guarded register.
+        ///
+        fn test_registers() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            let a_value: Word = 88;
+            let e_value: Word = 0;
+
+            let mut a = ConstantRegister::new(Rc::clone(&port_collection), a_value, String::from("a"));
+            let mut b = Register::new(Rc::clone(&port_collection), a.output_port, String::from("b"));
+
+            let mut e = ConstantRegister::new(Rc::clone(&port_collection), e_value, String::from("e"));
+            let mut c = GuardedRegister::new(Rc::clone(&port_collection), b.output_port, e.output_port, String::from("c"));
+
+            a.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(a.output_port), a_value);
+
+                assert_eq!(port_collection.get_port_data(b.input), a_value);
+                assert_eq!(port_collection.get_port_data(b.output_port), PORT_DEFAULT_VALUE);
+
+                assert_eq!(port_collection.get_port_data(c.input), PORT_DEFAULT_VALUE);
+                assert_eq!(port_collection.get_port_data(c.input_enable), PORT_DEFAULT_VALUE);
+                assert_eq!(port_collection.get_port_data(c.output_port), PORT_DEFAULT_VALUE);
+
+                assert_eq!(port_collection.get_port_data(e.output_port), e_value);
+            }
+
+            b.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(a.output_port), a_value);
+
+                assert_eq!(port_collection.get_port_data(b.input), a_value);
+                assert_eq!(port_collection.get_port_data(b.output_port), a_value);
+
+                assert_eq!(port_collection.get_port_data(c.input), a_value);
+                assert_eq!(port_collection.get_port_data(c.input_enable), PORT_DEFAULT_VALUE);
+                assert_eq!(port_collection.get_port_data(c.output_port), PORT_DEFAULT_VALUE);
+
+                assert_eq!(port_collection.get_port_data(e.output_port), e_value);
+            }
+
+            c.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(a.output_port), a_value);
+
+                assert_eq!(port_collection.get_port_data(b.input), a_value);
+                assert_eq!(port_collection.get_port_data(b.output_port), a_value);
+
+                assert_eq!(port_collection.get_port_data(c.input), a_value);
+                assert_eq!(port_collection.get_port_data(c.input_enable), e_value);
+                assert_eq!(port_collection.get_port_data(c.output_port), PORT_DEFAULT_VALUE);
+
+                assert_eq!(port_collection.get_port_data(e.output_port), e_value);
+            }
+
+            let e_value = 1;
+            e.constant_value = 1;
+            e.process_cycle();
+            c.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(a.output_port), a_value);
+
+                assert_eq!(port_collection.get_port_data(b.input), a_value);
+                assert_eq!(port_collection.get_port_data(b.output_port), a_value);
+
+                assert_eq!(port_collection.get_port_data(c.input), a_value);
+                assert_eq!(port_collection.get_port_data(c.input_enable), e_value);
+                assert_eq!(port_collection.get_port_data(c.output_port), a_value);
+
+                assert_eq!(port_collection.get_port_data(e.output_port), e_value);
+            }
+        }
+
+        #[test]
+        /// Tests whether a bit selection register correctly selects and shifts bits from its input.
+        pub fn test_bit_selection_register() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            const CONST_VALUE: Word = 0b_101101;
+            const NUM_VAL_BITS: usize = 6;
+            const OFFSET: usize = 5;
+
+            let mut c = ConstantRegister::new(Rc::clone(&port_collection), CONST_VALUE << OFFSET, String::from("c"));
+            let mut s = BitSelectionRegister::<OFFSET, NUM_VAL_BITS>::new(Rc::clone(&port_collection), c.output_port, String::from("c"));
+
+            c.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+                assert_eq!(PORT_DEFAULT_VALUE, port_collection.get_port_data(s.output_port));
+            }
+
+            s.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+                assert_eq!(CONST_VALUE, port_collection.get_port_data(s.output_port));
+            }
+        }
+    }
+
+    mod memories {
+        use super::*;
+
+        #[test]
+        /// Tests length modes and valid return values of an isolated read-only memory.
+        fn test_read_only_memory() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            let mut mem: [u8; MEM_SIZE] = [0u8; MEM_SIZE];
+            mem[0] = 0x0A;
+            mem[1] = 0x0B;
+            mem[2] = 0x0C;
+            mem[3] = 0x0D;
+            mem[4] = 0x02;
+            mem[5] = 0x04;
+            mem[6] = 0x06;
+            mem[7] = 0x08;
+
+            let address = 2;
+            let len_mode = MEM_LEN_BYTE;
+
+            let mut reg_addr = ConstantRegister::new(port_collection.clone(), address, String::from("reg_addr"));
+            let mut reg_len = ConstantRegister::new(port_collection.clone(), len_mode, String::from("reg_len"));
+
+            let mut memory = RMemory::new_with_mem(port_collection.clone(), reg_addr.output_port, reg_len.output_port, String::from("m"), &mem);
+
+            reg_addr.process_cycle();
+            reg_len.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(memory.address_input), address);
+                assert_eq!(port_collection.get_port_data(memory.length_input), len_mode);
+                assert_eq!(port_collection.get_port_data(memory.output_port), PORT_DEFAULT_VALUE);
+            }
+
+            memory.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(memory.address_input), address);
+                assert_eq!(port_collection.get_port_data(memory.length_input), len_mode);
+                assert_eq!(port_collection.get_port_data(memory.output_port), 0x000C);
+            }
+
+            let len_mode = MEM_LEN_SHORT;
+            reg_len.constant_value = len_mode;
+
+            reg_len.process_cycle();
+            memory.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(memory.address_input), address);
+                assert_eq!(port_collection.get_port_data(memory.length_input), len_mode);
+                assert_eq!(port_collection.get_port_data(memory.output_port), 0x0C0D);
+            }
+
+            let len_mode = MEM_LEN_WORD;
+            let address = 4;
+
+            reg_len.constant_value = len_mode;
+            reg_addr.constant_value = address;
+
+            reg_len.process_cycle();
+            reg_addr.process_cycle();
+            memory.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(memory.address_input), address);
+                assert_eq!(port_collection.get_port_data(memory.length_input), len_mode);
+                assert_eq!(port_collection.get_port_data(memory.output_port), 0x02040608);
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        /// Tests whether miss-aligned short memory access throws a panic.
+        fn test_read_only_memory_short_unaligned() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            let address = 3;
+            let len_mode = MEM_LEN_SHORT;
+
+            let mut reg_addr = ConstantRegister::new(port_collection.clone(), address, String::from("reg_addr"));
+            let mut reg_len = ConstantRegister::new(port_collection.clone(), len_mode, String::from("reg_len"));
+
+            let mut memory = RMemory::new(port_collection.clone(), reg_addr.output_port, reg_len.output_port, String::from("m"));
+
+            reg_addr.process_cycle();
+            reg_len.process_cycle();
+            memory.process_cycle();
+        }
+
+        #[test]
+        #[should_panic]
+        /// Tests whether miss-aligned word memory access throws a panic.
+        fn test_read_only_memory_word_unaligned() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            let address = 3;
+            let len_mode = MEM_LEN_WORD;
+
+            let mut reg_addr = ConstantRegister::new(port_collection.clone(), address, String::from("reg_addr"));
+            let mut reg_len = ConstantRegister::new(port_collection.clone(), len_mode, String::from("reg_len"));
+
+            let mut memory = RMemory::new(port_collection.clone(), reg_addr.output_port, reg_len.output_port, String::from("m"));
+
+            reg_addr.process_cycle();
+            reg_len.process_cycle();
+            memory.process_cycle();
+        }
+
+        #[test]
+        pub fn test_read_write_memory() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            let mut mem: [u8; MEM_SIZE] = [0u8; MEM_SIZE];
+            mem[0] = 0x0A;
+            mem[1] = 0x0B;
+            mem[2] = 0x0C;
+            mem[3] = 0x0D;
+            mem[4] = 0x02;
+            mem[5] = 0x04;
+            mem[6] = 0x06;
+            mem[7] = 0x08;
+
+            let address = 4;
+            let data = 0x12344321;
+            let len_mode = MEM_LEN_WORD;
+            let write_enable = 1;
+
+            let mut reg_addr = ConstantRegister::new(port_collection.clone(), address, String::from("reg_addr"));
+            let mut reg_len = ConstantRegister::new(port_collection.clone(), len_mode, String::from("reg_len"));
+
+            let mut reg_data = ConstantRegister::new(port_collection.clone(), data, String::from("reg_data"));
+            let mut reg_w_enable = ConstantRegister::new(port_collection.clone(), write_enable, String::from("reg_w_enable"));
+
+            let mut mem = RWMemory::new_with_mem(
+                port_collection.clone(),
+                reg_addr.output_port,
+                reg_len.output_port,
+                reg_data.output_port,
+                reg_w_enable.output_port,
+                String::from("mem"),
+                &mem,
             );
+
+            reg_addr.process_cycle();
+            reg_len.process_cycle();
+            reg_data.process_cycle();
+            reg_w_enable.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(mem.length_input), len_mode);
+                assert_eq!(port_collection.get_port_data(mem.address_input), address);
+                assert_eq!(port_collection.get_port_data(mem.data_input), data);
+                assert_eq!(port_collection.get_port_data(mem.write_enable_input), write_enable);
+                assert_eq!(port_collection.get_port_data(mem.output_port), PORT_DEFAULT_VALUE);
+            }
+
+            mem.process_cycle();
+
+            {
+                // Read should be the initial value
+                let port_collection = port_collection.borrow_mut();
+                assert_eq!(port_collection.get_port_data(mem.output_port), 0x02040608);
+
+                // Test Big Endianness
+                let data_bytes = data.to_be_bytes();
+                assert_eq!(mem.content[address as usize + 0], data_bytes[0]);
+                assert_eq!(mem.content[address as usize + 1], data_bytes[1]);
+                assert_eq!(mem.content[address as usize + 2], data_bytes[2]);
+                assert_eq!(mem.content[address as usize + 3], data_bytes[3]);
+            }
+
+            mem.process_cycle();
+
+            {
+                // Read should be the previously written value
+                let port_collection = port_collection.borrow_mut();
+                assert_eq!(port_collection.get_port_data(mem.output_port), data);
+            }
+
+            // Test write enable
+
+            let new_data = 0x11223344;
+            let write_enable = 0;
+
+            reg_data.constant_value = new_data;
+            reg_w_enable.constant_value = write_enable;
+
+            reg_data.process_cycle();
+            reg_w_enable.process_cycle();
+
+            mem.process_cycle();
+            mem.process_cycle();
+
+            {
+                // Read should be the previously written value
+                let port_collection = port_collection.borrow_mut();
+                assert_eq!(port_collection.get_port_data(mem.output_port), data);
+            }
         }
     }
-    /// Creates a test case expecting a RaW hazard
-    macro_rules! expect_hazard {
-        ($instr_r:literal, $instr_w:literal) => {
-            assert_eq!(
-                check_raw_hazard(
-                    assembler::encode_instruction_str($instr_r).unwrap(),
-                    assembler::encode_instruction_str($instr_w).unwrap()
-                ),
-                true
+
+    mod functional_units {
+        use super::*;
+
+        #[test]
+        fn test_adder() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            let in_a = 8;
+            let in_b = 80;
+
+            let mut reg_a = ConstantRegister::new(port_collection.clone(), in_a, String::from("reg_a"));
+            let mut reg_b = ConstantRegister::new(port_collection.clone(), in_b, String::from("reg_b"));
+
+            let mut adder = Adder::new(port_collection.clone(), reg_a.output_port, reg_b.output_port, String::from("add"));
+
+            reg_a.process_cycle();
+            reg_b.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(adder.input_a), in_a);
+                assert_eq!(port_collection.get_port_data(adder.input_b), in_b);
+                assert_eq!(port_collection.get_port_data(adder.output_port), PORT_DEFAULT_VALUE);
+            }
+
+            adder.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(adder.input_a), in_a);
+                assert_eq!(port_collection.get_port_data(adder.input_b), in_b);
+                assert_eq!(port_collection.get_port_data(adder.output_port), in_a + in_b);
+            }
+        }
+
+        #[test]
+        pub fn test_comparator_unsigned() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            // Test LT
+
+            let in_a = 8;
+            let in_b = 80;
+            let in_mode = Comparator::MODE_U;
+
+            let mut reg_a = ConstantRegister::new(port_collection.clone(), in_a, String::from("reg_a"));
+            let mut reg_b = ConstantRegister::new(port_collection.clone(), in_b, String::from("reg_b"));
+            let reg_mode = ConstantRegister::new(port_collection.clone(), in_mode, String::from("reg_mode"));
+
+            let mut comp = Comparator::new(port_collection.clone(), reg_a.output_port, reg_b.output_port, reg_mode.output_port, String::from("comp"));
+
+            reg_a.process_cycle();
+            reg_b.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(comp.input_a), in_a);
+                assert_eq!(port_collection.get_port_data(comp.input_b), in_b);
+                assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
+                assert_eq!(port_collection.get_port_data(comp.output_port), PORT_DEFAULT_VALUE);
+            }
+
+            comp.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(comp.input_a), in_a);
+                assert_eq!(port_collection.get_port_data(comp.input_b), in_b);
+                assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
+                assert_eq!(port_collection.get_port_data(comp.output_port), Comparator::LT_BIT);
+            }
+
+            // Test EQ
+
+            let in_a = 80;
+            let in_b = 80;
+
+            reg_a.constant_value = in_a;
+            reg_b.constant_value = in_b;
+
+            reg_a.process_cycle();
+            reg_b.process_cycle();
+            comp.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(comp.input_a), in_a);
+                assert_eq!(port_collection.get_port_data(comp.input_b), in_b);
+                assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
+                assert_eq!(port_collection.get_port_data(comp.output_port), Comparator::EQ_BIT);
+            }
+
+            // Test GT
+
+            let in_a = 88;
+            let in_b = 80;
+
+            reg_a.constant_value = in_a;
+            reg_b.constant_value = in_b;
+
+            reg_a.process_cycle();
+            reg_b.process_cycle();
+            comp.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(comp.input_a), in_a);
+                assert_eq!(port_collection.get_port_data(comp.input_b), in_b);
+                assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
+                assert_eq!(port_collection.get_port_data(comp.output_port), 0);
+            }
+        }
+
+        #[test]
+        pub fn test_comparator_signed() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            // Test LT
+
+            let in_a: SWord = -88;
+            let in_b: SWord = 80;
+            let in_mode = Comparator::MODE_S;
+
+            let mut reg_a = ConstantRegister::new(port_collection.clone(), in_a as Word, String::from("reg_a"));
+            let mut reg_b = ConstantRegister::new(port_collection.clone(), in_b as Word, String::from("reg_b"));
+            let reg_mode = ConstantRegister::new(port_collection.clone(), in_mode, String::from("reg_mode"));
+
+            let mut comp = Comparator::new(port_collection.clone(), reg_a.output_port, reg_b.output_port, reg_mode.output_port, String::from("comp"));
+
+            reg_a.process_cycle();
+            reg_b.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(comp.input_a), in_a as Word);
+                assert_eq!(port_collection.get_port_data(comp.input_b), in_b as Word);
+                assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
+                assert_eq!(port_collection.get_port_data(comp.output_port), PORT_DEFAULT_VALUE);
+            }
+
+            comp.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(comp.input_a), in_a as Word);
+                assert_eq!(port_collection.get_port_data(comp.input_b), in_b as Word);
+                assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
+                assert_eq!(port_collection.get_port_data(comp.output_port), Comparator::LT_BIT);
+            }
+
+            // Test EQ
+
+            let in_a: SWord = -80;
+            let in_b: SWord = -80;
+
+            reg_a.constant_value = in_a as Word;
+            reg_b.constant_value = in_b as Word;
+
+            reg_a.process_cycle();
+            reg_b.process_cycle();
+            comp.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(comp.input_a), in_a as Word);
+                assert_eq!(port_collection.get_port_data(comp.input_b), in_b as Word);
+                assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
+                assert_eq!(port_collection.get_port_data(comp.output_port), Comparator::EQ_BIT);
+            }
+
+            // Test GT
+
+            let in_a: SWord = 8;
+            let in_b: SWord = -80;
+
+            reg_a.constant_value = in_a as Word;
+            reg_b.constant_value = in_b as Word;
+
+            reg_a.process_cycle();
+            reg_b.process_cycle();
+            comp.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(comp.input_a), in_a as Word);
+                assert_eq!(port_collection.get_port_data(comp.input_b), in_b as Word);
+                assert_eq!(port_collection.get_port_data(comp.input_mode), in_mode);
+                assert_eq!(port_collection.get_port_data(comp.output_port), 0);
+            }
+        }
+
+        #[test]
+        pub fn test_branch_tester_signed() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            let mut reg_a = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_a"));
+            let mut reg_b = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_b"));
+            let mut reg_func = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_func"));
+            let mut reg_mode = BitSelectionRegister::<2, 1>::new(port_collection.clone(), reg_func.output_port, String::from("reg_mode"));
+
+            let mut comp = Comparator::new(port_collection.clone(), reg_a.output_port, reg_b.output_port, reg_mode.output_port, String::from("comp"));
+            let mut bt = BranchTester::new(port_collection.clone(), comp.output_port, reg_func.output_port, String::from("bt"));
+
+            let a_b_pairs = [
+                (-80, 80),
+                (-8, -8),
+                (80, -80)
+            ];
+
+            let branch_matrix = [
+                // BEQ, BNE, BLT, BGE
+                [0, 1, 1, 0],
+                [1, 0, 0, 1],
+                [0, 1, 0, 1],
+            ];
+
+            // No unsigned versions
+            let func_codes = [
+                func_code_3::BEQ, func_code_3::BNE, func_code_3::BLT, func_code_3::BGE
+            ];
+
+            for i in 0..a_b_pairs.len() {
+                for j in 0..func_codes.len() {
+                    let (in_a, in_b): (SWord, SWord) = a_b_pairs[i];
+                    let in_func = func_codes[j];
+                    let expectation = branch_matrix[i][j];
+
+                    reg_a.constant_value = in_a as Word;
+                    reg_b.constant_value = in_b as Word;
+                    reg_func.constant_value = in_func;
+
+                    reg_a.process_cycle();
+                    reg_b.process_cycle();
+                    reg_func.process_cycle();
+                    reg_mode.process_cycle();
+                    comp.process_cycle();
+                    bt.process_cycle();
+
+                    let port_collection = port_collection.borrow_mut();
+                    assert_eq!(port_collection.get_port_data(bt.output_port), expectation);
+                }
+            }
+        }
+
+        #[test]
+        pub fn test_branch_tester_unsigned() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            let mut reg_a = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_a"));
+            let mut reg_b = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_b"));
+            let mut reg_func = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_func"));
+            let mut reg_mode = BitSelectionRegister::<2, 1>::new(port_collection.clone(), reg_func.output_port, String::from("reg_mode"));
+
+            let mut comp = Comparator::new(port_collection.clone(), reg_a.output_port, reg_b.output_port, reg_mode.output_port, String::from("comp"));
+            let mut bt = BranchTester::new(port_collection.clone(), comp.output_port, reg_func.output_port, String::from("bt"));
+
+            let a_b_pairs = [
+                (80, 88),
+                (88, 88),
+                (88, 80)
+            ];
+
+            let branch_matrix = [
+                // BEQ, BNE, BLTU, BGEU
+                [0, 1, 1, 0],
+                [1, 0, 0, 1],
+                [0, 1, 0, 1],
+            ];
+
+            // No signed versions
+            let func_codes = [
+                func_code_3::BEQ, func_code_3::BNE, func_code_3::BLTU, func_code_3::BGEU
+            ];
+
+            for i in 0..a_b_pairs.len() {
+                for j in 0..func_codes.len() {
+                    let (in_a, in_b): (SWord, SWord) = a_b_pairs[i];
+                    let in_func = func_codes[j];
+                    let expectation = branch_matrix[i][j];
+
+                    reg_a.constant_value = in_a as Word;
+                    reg_b.constant_value = in_b as Word;
+                    reg_func.constant_value = in_func;
+
+                    reg_a.process_cycle();
+                    reg_b.process_cycle();
+                    reg_func.process_cycle();
+                    reg_mode.process_cycle();
+                    comp.process_cycle();
+                    bt.process_cycle();
+
+                    let port_collection = port_collection.borrow_mut();
+                    assert_eq!(port_collection.get_port_data(bt.output_port), expectation);
+                }
+            }
+        }
+
+        #[test]
+        pub fn test_alu_signed() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            let mut reg_a = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_a"));
+            let mut reg_b = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_b"));
+            let mut reg_func = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_func"));
+
+            let mut alu = ALU::new(
+                port_collection.clone(),
+                reg_a.output_port,
+                reg_b.output_port,
+                reg_func.output_port,
+                String::from("alu"),
             );
+
+            let tests = [
+                // FUNC, A, B, EXPECTATION
+                (ALU::OP_ADD, 80 as SWord, 8 as SWord, 88 as SWord),
+                (ALU::OP_ADD, -88, 8, -80),
+                (ALU::OP_SUB, -80, 8, -88),
+                (ALU::OP_SUB, -88, -8, -80),
+                (ALU::OP_BYPASS_A, -88, -8, -88),
+                (ALU::OP_BYPASS_B, -88, -8, -8),
+                (ALU::OP_AND, 0b_101010, 0b_001110, 0b_001010),
+                (ALU::OP_OR, 0b_101010, 0b_001110, 0b_101110),
+                (ALU::OP_XOR, 0b_101010, 0b_001110, 0b_100100),
+                (ALU::OP_SLTU, 88, 80, 0),
+                (ALU::OP_SLTU, 88, 88, 0),
+                (ALU::OP_SLTU, 88, 888, 1),
+                (ALU::OP_MUL, -8, -8, 64),
+                (ALU::OP_MUL, -8, 8, -64),
+                (ALU::OP_SLL, 0b_00001100, 2, 0b_00110000),
+                (ALU::OP_SRL, 0b_00001100, 2, 0b_00000011),
+                (ALU::OP_SRA, -8, 2, -2),
+                (ALU::OP_SRA, 8, 2, 2),
+            ];
+
+            for (func, in_a, in_b, expectation) in tests {
+                reg_a.constant_value = in_a as Word;
+                reg_b.constant_value = in_b as Word;
+                reg_func.constant_value = func;
+
+                reg_a.process_cycle();
+                reg_b.process_cycle();
+                reg_func.process_cycle();
+                alu.process_cycle();
+
+                let port_collection = port_collection.borrow_mut();
+                assert_eq!(port_collection.get_port_data(alu.output_port), expectation as Word);
+            }
+        }
+
+        #[test]
+        pub fn test_alu_unsigned() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            let mut reg_a = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_a"));
+            let mut reg_b = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_b"));
+            let mut reg_func = ConstantRegister::new(port_collection.clone(), PORT_DEFAULT_VALUE, String::from("reg_func"));
+
+            let mut alu = ALU::new(
+                port_collection.clone(),
+                reg_a.output_port,
+                reg_b.output_port,
+                reg_func.output_port,
+                String::from("alu"),
+            );
+
+            let tests = [
+                // FUNC, A, B, EXPECTATION
+                (ALU::OP_ADD, 80, 8, 88),
+                (ALU::OP_SUB, 88, 8, 80),
+                (ALU::OP_BYPASS_A, 88, 8, 88),
+                (ALU::OP_BYPASS_B, 88, 8, 8),
+                (ALU::OP_AND, 0b_101010, 0b_001110, 0b_001010),
+                (ALU::OP_OR, 0b_101010, 0b_001110, 0b_101110),
+                (ALU::OP_XOR, 0b_101010, 0b_001110, 0b_100100),
+                (ALU::OP_SLTU, 88, 80, 0),
+                (ALU::OP_SLTU, 88, 88, 0),
+                (ALU::OP_SLTU, 88, 888, 1),
+                (ALU::OP_MUL, 8, 8, 64),
+                (ALU::OP_SLL, 0b_00001100, 2, 0b_00110000),
+                (ALU::OP_SRL, 0b_00001100, 2, 0b_00000011),
+                (ALU::OP_SUB, 10, 20, (-10 as SWord) as Word),  // Test underflow
+                (ALU::OP_ADD, Word::MAX, 1, 0),                 // Test overflow
+            ];
+
+            for (func, in_a, in_b, expectation) in tests {
+                reg_a.constant_value = in_a;
+                reg_b.constant_value = in_b;
+                reg_func.constant_value = func;
+
+                reg_a.process_cycle();
+                reg_b.process_cycle();
+                reg_func.process_cycle();
+                alu.process_cycle();
+
+                let port_collection = port_collection.borrow_mut();
+                assert_eq!(port_collection.get_port_data(alu.output_port), expectation);
+            }
         }
     }
 
-    // Only different registers
-    expect_no_hazard!("ADD x4 x5 x6", "ADD x1 x2 x3");
-    expect_no_hazard!("ADDI x2 x3 100", "ADDI x1 x0 50");
-    expect_no_hazard!("STORE x2 x3 100", "LOAD x1 x0 50");
+    mod switching {
+        use super::*;
 
-    // No RaW hazards on register 0
-    expect_no_hazard!("ADD x2 x0 x0", "ADDI x0 x1 50");
-    expect_no_hazard!("NOP", "NOP");
+        #[test]
+        /// Tests an isolated mux with 2 inputs and a single bit selection line. Tests valid input selection,
+        /// as well as application of the input mask.
+        fn test_binary_mux() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
 
-    // RaW hazard
-    expect_hazard!("STORE x22 x0 50", "ADDI x22 x22 50");
-    expect_hazard!("ADD x1 x3 x4", "ADD x3 x4 x4");
-    expect_hazard!("ADD x1 x3 x4", "LOAD x3 x0 10");
-}
+            let input_value_a = 8;
+            let input_value_b = 88;
 
-/*
-Processor -- IF Stage
- */
+            let selection_value = 0;
 
-pub struct IFStage {
-    /// Program counter register
-    pub reg_pc: GuardedRegister,
+            let mut reg_a = ConstantRegister::new(port_collection.clone(), input_value_a, String::from("reg_a"));
+            let mut reg_b = ConstantRegister::new(port_collection.clone(), input_value_b, String::from("reg_b"));
+            let mut reg_s = ConstantRegister::new(port_collection.clone(), selection_value, String::from("reg_c"));
 
-    /// Adder for PC increase
-    pub addr: Adder,
+            let mut mux = Mux::<2>::new(port_collection.clone(), &[reg_a.output_port, reg_b.output_port], reg_s.output_port, String::from("mux"));
 
-    /// Mux for deciding branch vs next instruction
-    pub mux: Mux<2>,
+            reg_a.process_cycle();
+            reg_b.process_cycle();
+            reg_s.process_cycle();
 
-    /// Instruction memory
-    pub imem: RMemory,
+            {
+                let port_collection = port_collection.borrow_mut();
 
-    /// Constant '2' for increasing program counter
-    pub reg_c_4: ConstantRegister,
+                assert_eq!(port_collection.get_port_data(mux.inputs[0]), input_value_a);
+                assert_eq!(port_collection.get_port_data(mux.inputs[1]), input_value_b);
+                assert_eq!(port_collection.get_port_data(mux.output_port), PORT_DEFAULT_VALUE);
+            }
 
-    /// Constant 'MEM_LEN_SHORT' for fetching 2-byte instructions
-    pub reg_c_len_mode: ConstantRegister,
+            mux.process_cycle();
 
-    /// NPC register storing next program counter
-    pub reg_npc: GuardedRegister,
+            {
+                let port_collection = port_collection.borrow_mut();
 
-    /// IR register for storing fetched instruction
-    pub reg_ir: GuardedRegister
-}
+                assert_eq!(port_collection.get_port_data(mux.inputs[0]), input_value_a);
+                assert_eq!(port_collection.get_port_data(mux.inputs[1]), input_value_b);
+                assert_eq!(port_collection.get_port_data(mux.output_port), input_value_a);
+            }
 
-impl IFStage {
-    pub fn new(port_collection: Rc<RefCell<PortCollection>>) -> Self {
-        // First create all constant registers
-        let reg_c_4 = ConstantRegister::new(port_collection.clone(), 4, String::from("if_reg_c_4"));
-        let reg_c_len_mode = ConstantRegister::new(port_collection.clone(), MEM_LEN_WORD, String::from("if_reg_c_len_mode"));
+            let selection_value = 1;
+            reg_s.constant_value = selection_value;
 
-        // Program counter register (still need connection to interlock unit and branch feedback)
-        let mut reg_pc = GuardedRegister::new(port_collection.clone(), PORT_NULL_ID, PORT_NULL_ID, String::from("if_reg_pc"));
+            reg_s.process_cycle();
+            mux.process_cycle();
 
-        // Adder, mux, and instruction memory (connecting second mux input requires EX stage)
-        let addr = Adder::new(port_collection.clone(), reg_c_4.output_port, reg_pc.output_port, String::from("if_addr"));
-        let mux = Mux::<2>::new(port_collection.clone(), &[addr.output_port, PORT_NULL_ID], PORT_NULL_ID, String::from("if_mux"));
-        let imem = RMemory::new(port_collection.clone(), reg_pc.output_port, reg_c_len_mode.output_port, String::from("if_imem"));
+            {
+                let port_collection = port_collection.borrow_mut();
 
-        // Pipeline registers: IR and NPC (still need connection to interlock unit)
-        let reg_npc = GuardedRegister::new(port_collection.clone(), mux.output_port, PORT_NULL_ID, String::from("if_npc"));
-        let reg_ir = GuardedRegister::new(port_collection.clone(), imem.output_port, PORT_NULL_ID, String::from("if_ir"));
+                assert_eq!(port_collection.get_port_data(mux.inputs[0]), input_value_a);
+                assert_eq!(port_collection.get_port_data(mux.inputs[1]), input_value_b);
+                assert_eq!(port_collection.get_port_data(mux.output_port), input_value_b);
+            }
 
-        // Set PC input to the MUX output
-        reg_pc.input = mux.output_port;
+            let selection_value = 2;
+            reg_s.constant_value = selection_value;
 
-        Self {
-            reg_pc,
-            addr,
-            mux,
-            imem,
-            reg_c_4,
-            reg_c_len_mode,
-            reg_npc,
-            reg_ir
+            reg_s.process_cycle();
+            mux.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(mux.inputs[0]), input_value_a);
+                assert_eq!(port_collection.get_port_data(mux.inputs[1]), input_value_b);
+                assert_eq!(port_collection.get_port_data(mux.output_port), input_value_a);
+            }
+        }
+
+        #[test]
+        /// Tests an isolated demux with 2 outputs and a single bit selection line. Tests valid output selection,
+        /// as well as application of the input mask.
+        fn test_binary_de_mux() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+
+            let input_value = 88;
+            let selection_value = 0;
+
+            let mut reg_a = ConstantRegister::new(port_collection.clone(), input_value, String::from("reg_a"));
+            let mut reg_s = ConstantRegister::new(port_collection.clone(), selection_value, String::from("reg_s"));
+
+            let mut de_mux = DeMux::<2>::new(port_collection.clone(), reg_a.output_port, reg_s.output_port, String::from("demux"));
+
+            reg_a.process_cycle();
+            reg_s.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(de_mux.input), input_value);
+                assert_eq!(port_collection.get_port_data(de_mux.selection_input), selection_value);
+                assert_eq!(port_collection.get_port_data(de_mux.outputs[0]), PORT_DEFAULT_VALUE);
+                assert_eq!(port_collection.get_port_data(de_mux.outputs[1]), PORT_DEFAULT_VALUE);
+            }
+
+            de_mux.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(de_mux.input), input_value);
+                assert_eq!(port_collection.get_port_data(de_mux.selection_input), selection_value);
+                assert_eq!(port_collection.get_port_data(de_mux.outputs[0]), input_value);
+                assert_eq!(port_collection.get_port_data(de_mux.outputs[1]), PORT_DEFAULT_VALUE);
+            }
+
+            let selection_value = 1;
+            reg_s.constant_value = selection_value;
+
+            reg_s.process_cycle();
+            de_mux.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(de_mux.input), input_value);
+                assert_eq!(port_collection.get_port_data(de_mux.selection_input), selection_value);
+                assert_eq!(port_collection.get_port_data(de_mux.outputs[0]), PORT_DEFAULT_VALUE);
+                assert_eq!(port_collection.get_port_data(de_mux.outputs[1]), input_value);
+            }
+
+            let selection_value = 2;
+            reg_s.constant_value = selection_value;
+
+            reg_s.process_cycle();
+            de_mux.process_cycle();
+
+            {
+                let port_collection = port_collection.borrow_mut();
+
+                assert_eq!(port_collection.get_port_data(de_mux.input), input_value);
+                assert_eq!(port_collection.get_port_data(de_mux.selection_input), selection_value);
+                assert_eq!(port_collection.get_port_data(de_mux.outputs[0]), input_value);
+                assert_eq!(port_collection.get_port_data(de_mux.outputs[1]), PORT_DEFAULT_VALUE);
+            }
         }
     }
 
-    /// Makes necessary connections for interlock unit.
-    pub fn connect_interlock_unit(&mut self, iu_out: PortID) {
-        self.reg_pc.input_enable = iu_out;
-        self.reg_ir.input_enable = iu_out;
-        self.reg_npc.input_enable = iu_out;
-    }
-}
+    mod register_file {
+        use super::*;
 
-impl Component for IFStage {
-    fn process_cycle(&mut self) {
-        // Constants
-        self.reg_c_len_mode.process_cycle();
-        self.reg_c_4.process_cycle();
+        #[test]
+        /// Tests writing to and reading from a register file.
+        fn test_rf() {
+            let port_collection = Rc::new(RefCell::new(PortCollection::new()));
 
-        // Get PC
-        self.reg_pc.process_cycle();
+            let val_read_a = 0;
+            let val_read_b = 3;
 
-        // Increase PC
-        self.addr.process_cycle();
-        self.mux.process_cycle();
+            let val_write_data = 88;
+            let val_write_select = 0;
+            let val_write_enable = 0;
 
-        // Instruction fetch
-        self.imem.process_cycle();
+            let mut reg_read_a = ConstantRegister::new(port_collection.clone(), val_read_a, String::from("reg_read_a"));
+            let mut reg_read_b = ConstantRegister::new(port_collection.clone(), val_read_b, String::from("reg_read_b"));
 
-        // Pipeline registers
-        self.reg_npc.process_cycle();
-        self.reg_ir.process_cycle();
-    }
-}
+            let mut reg_write_data = ConstantRegister::new(port_collection.clone(), val_write_data, String::from("reg_write_data"));
+            let mut reg_write_select = ConstantRegister::new(port_collection.clone(), val_write_select, String::from("reg_write_select"));
+            let mut reg_write_enable = ConstantRegister::new(port_collection.clone(), val_write_enable, String::from("reg_write_enable"));
 
-/*
-Processor -- ID Stage
- */
+            let mut rf = RegisterFile::<8>::new(
+                port_collection.clone(),
+                reg_read_a.output_port,
+                reg_read_b.output_port,
+                reg_write_data.output_port,
+                reg_write_select.output_port,
+                reg_write_enable.output_port,
+            );
 
-pub struct IDStage {
-    /*
-    Registers for extracting register numbers
-     */
+            reg_read_a.process_cycle();
+            reg_read_b.process_cycle();
+            reg_write_data.process_cycle();
+            reg_write_select.process_cycle();
+            reg_write_enable.process_cycle();
+            rf.process_cycle();
 
-    /// Destination register number
-    pub reg_shift_rd: BitSelectionRegister<7, 5>,
+            {
+                let port_collection = port_collection.borrow_mut();
 
-    /// Source 1 register number
-    pub reg_shift_rs1: BitSelectionRegister<15, 5>,
+                assert_eq!(port_collection.get_port_data(rf.out_a), PORT_DEFAULT_VALUE);
+                assert_eq!(port_collection.get_port_data(rf.out_b), PORT_DEFAULT_VALUE);
+            }
 
-    /// Source 2 register number
-    pub reg_shift_rs2: BitSelectionRegister<20, 5>,
+            // Write data to register 0
+            let val_write_enable = 1;
+            reg_write_enable.constant_value = val_write_enable;
 
-    /*
-    Register file and sign extend
-    */
+            reg_write_enable.process_cycle();
+            rf.process_cycle();
 
-    /// Constant register for returning 0 when reading from x0
-    pub reg_c_x0: ConstantRegister,
+            {
+                let port_collection = port_collection.borrow_mut();
 
-    /// Register file (32 registers)
-    pub rf: RegisterFile<32>,
+                assert_eq!(port_collection.get_port_data(rf.out_a), val_write_data);
+                assert_eq!(port_collection.get_port_data(rf.out_b), PORT_DEFAULT_VALUE);
+            }
 
-    /// Sign extension unit for processing immediate values
-    pub sign_extend: ImmSignExtender,
+            // Write data to register 3
+            let val_write_data = 33;
+            let val_write_select = 3;
 
-    /*
-    Pipeline registers
-    */
+            reg_write_data.constant_value = val_write_data;
+            reg_write_select.constant_value = val_write_select;
 
-    /// IR register for storing current instruction
-    pub reg_ir: GuardedRegister,
+            reg_write_data.process_cycle();
+            reg_write_select.process_cycle();
+            rf.process_cycle();
 
-    /// Next program counter
-    pub reg_npc: GuardedRegister,
+            {
+                let port_collection = port_collection.borrow_mut();
 
-    /// Destination register number
-    pub reg_rd: GuardedRegister,
+                assert_eq!(port_collection.get_port_data(rf.out_a), 88);
+                assert_eq!(port_collection.get_port_data(rf.out_b), val_write_data);
+            }
 
-    /// Source 1 register number
-    pub reg_ra: GuardedRegister,
+            // Change read registers
 
-    /// Source 2 register number
-    pub reg_rb: GuardedRegister,
+            reg_read_a.constant_value = val_read_b;
+            reg_read_b.constant_value = 7;
 
-    /// I-type immediate
-    pub reg_imm_i: GuardedRegister,
+            reg_write_enable.constant_value = 0;
 
-    /// S-type immediate
-    pub reg_imm_s: GuardedRegister,
+            reg_read_a.process_cycle();
+            reg_read_b.process_cycle();
+            reg_write_enable.process_cycle();
 
-    /// B-type immediate
-    pub reg_imm_b: GuardedRegister,
+            rf.process_cycle();
 
-    /// U-type immediate
-    pub reg_imm_u: GuardedRegister,
+            {
+                let port_collection = port_collection.borrow_mut();
 
-    /// J-type immediate
-    pub reg_imm_j: GuardedRegister,
-}
-
-impl IDStage {
-    pub fn new(port_collection: Rc<RefCell<PortCollection>>, if_stage: &IFStage) -> Self {
-        // Sign extension unit used for exracting and assembling immediate values from instructions
-        let sign_extend = ImmSignExtender::new(port_collection.clone(), if_stage.reg_ir.output_port, String::from("id_imm"));
-
-        // Registers used for extracting register numbers from instruction
-        let reg_shift_rs1 = BitSelectionRegister::<15, 5>::new(port_collection.clone(), if_stage.reg_ir.output_port, String::from("id_reg_shift_rs1"));
-        let reg_shift_rs2 = BitSelectionRegister::<20, 5>::new(port_collection.clone(), if_stage.reg_ir.output_port, String::from("id_reg_shift_rs2"));
-        let reg_shift_rd = BitSelectionRegister::<7, 5>::new(port_collection.clone(), if_stage.reg_ir.output_port, String::from("id_reg_shift_rsd"));
-
-        // Register file
-        let mut rf = RegisterFile::<32>::new(
-            port_collection.clone(),
-            reg_shift_rs1.output_port,
-            reg_shift_rs2.output_port,
-            PORT_NULL_ID,                    // Originates from WB stage
-            PORT_NULL_ID,                   // Originates from WB stage
-            PORT_NULL_ID
-        );
-
-        // Overwrite input 0 on the output muxes of the register file. Reading x0 should always
-        // return 0, which we will read from a constant register.
-        let reg_c_x0 = ConstantRegister::new(port_collection.clone(), 0, String::from("id_reg_c_x0"));
-
-        rf.mux_out_a.inputs[0] = reg_c_x0.output_port;
-        rf.mux_out_b.inputs[0] = reg_c_x0.output_port;
-
-        // Pipeline registers (still need connection to interlock unit)
-        let reg_npc = GuardedRegister::new(port_collection.clone(), if_stage.reg_npc.output_port, PORT_NULL_ID, String::from("id_reg_npc"));
-
-        let reg_ra = GuardedRegister::new(port_collection.clone(), rf.out_a, PORT_NULL_ID, String::from("id_reg_ra"));
-        let reg_rb = GuardedRegister::new(port_collection.clone(), rf.out_b, PORT_NULL_ID, String::from("id_reg_rb"));
-
-        let reg_imm_i = GuardedRegister::new(port_collection.clone(), sign_extend.out_i_type, PORT_NULL_ID, String::from("id_reg_imm_i"));
-        let reg_imm_s = GuardedRegister::new(port_collection.clone(), sign_extend.out_s_type, PORT_NULL_ID, String::from("id_reg_imm_s"));
-        let reg_imm_b = GuardedRegister::new(port_collection.clone(), sign_extend.out_b_type, PORT_NULL_ID, String::from("id_reg_imm_b"));
-        let reg_imm_u = GuardedRegister::new(port_collection.clone(), sign_extend.out_u_type, PORT_NULL_ID, String::from("id_reg_imm_u"));
-        let reg_imm_j = GuardedRegister::new(port_collection.clone(), sign_extend.out_j_type, PORT_NULL_ID, String::from("id_reg_imm_j"));
-
-        let reg_rd = GuardedRegister::new(port_collection.clone(), reg_shift_rd.output_port, PORT_NULL_ID, String::from("id_reg_rd"));
-        let reg_ir = GuardedRegister::new(port_collection.clone(), if_stage.reg_ir.output_port, PORT_NULL_ID, String::from("id_ir"));
-
-        Self {
-            reg_shift_rd,
-            reg_shift_rs1,
-            reg_shift_rs2,
-            reg_c_x0,
-            rf,
-            sign_extend,
-            reg_ir,
-            reg_npc,
-            reg_rd,
-            reg_ra,
-            reg_rb,
-            reg_imm_i,
-            reg_imm_s,
-            reg_imm_b,
-            reg_imm_u,
-            reg_imm_j
+                assert_eq!(port_collection.get_port_data(rf.out_a), val_write_data);
+                assert_eq!(port_collection.get_port_data(rf.out_b), PORT_DEFAULT_VALUE);
+            }
         }
     }
 
-    /// Makes necessary connections for interlock unit.
-    pub fn connect_interlock_unit(&mut self, iu_out: PortID) {
-        self.reg_ir.input_enable = iu_out;
-        self.reg_npc.input_enable = iu_out;
-        self.reg_rd.input_enable = iu_out;
-        self.reg_ra.input_enable = iu_out;
-        self.reg_rb.input_enable = iu_out;
-        self.reg_imm_i.input_enable = iu_out;
-        self.reg_imm_s.input_enable = iu_out;
-        self.reg_imm_b.input_enable = iu_out;
-        self.reg_imm_u.input_enable = iu_out;
-        self.reg_imm_j.input_enable = iu_out;
-    }
-}
+    mod misc {
+        use super::*;
 
-impl Component for IDStage {
-    fn process_cycle(&mut self) {
-        // Constants
-        self.reg_c_x0.process_cycle();
-
-        // Main cycle
-        self.reg_shift_rd.process_cycle();
-        self.reg_shift_rs1.process_cycle();
-        self.reg_shift_rs2.process_cycle();
-
-        self.rf.process_cycle();
-        self.sign_extend.process_cycle();
-
-        // Pipeline registers
-        self.reg_ir.process_cycle();
-        self.reg_npc.process_cycle();
-        self.reg_rd.process_cycle();
-        self.reg_ra.process_cycle();
-        self.reg_rb.process_cycle();
-        self.reg_imm_i.process_cycle();
-        self.reg_imm_s.process_cycle();
-        self.reg_imm_b.process_cycle();
-        self.reg_imm_u.process_cycle();
-        self.reg_imm_j.process_cycle();
-    }
-}
-
-/*
-Processor -- EX Stage
- */
-
-pub struct EXStage {
-    /*
-    Control registers
-     */
-
-    /// Selects which IMM version should be used
-    pub ctrl_reg_imm_select: ConstantRegister,
-
-    /// Selects whether ra or NPC should be forwarded to the ALU
-    pub ctrl_reg_ra_select: ConstantRegister,
-
-    /// Selects whether rb or imm should be forwarded to the ALU
-    pub ctrl_reg_rb_select: ConstantRegister,
-
-    /// Passes the function code to the ALU
-    pub ctrl_reg_alu_func: ConstantRegister,
-
-    /// Passes the compare mode (signes vs unsigned) to the comparator
-    pub ctrl_reg_comp_mode: ConstantRegister,
-
-    /// Passes the type of branch condition to the branch tester
-    pub ctrl_reg_branch_cond: ConstantRegister,
-
-    /// Used to switch between the evaluated branch condition and constant rejection (if the
-    /// instruction is not a branch)
-    pub ctrl_reg_branch_taken: ConstantRegister,
-
-    /*
-    Constant registers
-     */
-
-    /// Holds the branch rejection value
-    pub reg_c_reject: ConstantRegister,
-
-    /*
-    Muxes
-     */
-
-    /// Switches between immediate types
-    pub mux_imm_select: Mux<5>,
-
-    /// Switches between ra and NPC before passing to the ALU
-    pub mux_ra_select: Mux<2>,
-
-    /// Switches between rb and imm before passing to the ALU
-    pub mux_rb_select: Mux<2>,
-
-    /// Switches between the evaluated branch condition and constant rejection
-    pub mux_branch_taken: Mux<2>,
-
-    /*
-    Functional Units
-     */
-
-    /// Used to compare values for testing branch conditions
-    pub comp: Comparator,
-
-    /// Takes output from the comparator and evaluates branch conditions
-    pub branch_test: BranchTester,
-
-    /// Performs arithmetic
-    pub alu: ALU,
-
-    /*
-    Pipeline Registers
-     */
-
-    /// IR register for storing current instruction
-    pub reg_ir: Register,
-
-    /// Stores the evaluation of the branch condition
-    pub reg_bt: Register,
-
-    /// Stores the result coming from the ALU
-    pub reg_alu: Register,
-
-    /// Stores the rb value
-    pub reg_rb: Register,
-
-    /// Stores the destination register
-    pub reg_rd: Register,
-
-    /*
-    Pointer to port collection
-     */
-
-    pub port_collection: Rc<RefCell<PortCollection>>,
-}
-
-impl EXStage {
-    const MUX_IMM_I_TYPE: Word = 0;
-    const MUX_IMM_S_TYPE: Word = 1;
-    const MUX_IMM_B_TYPE: Word = 2;
-    const MUX_IMM_U_TYPE: Word = 3;
-    const MUX_IMM_J_TYPE: Word = 4;
-
-    const MUX_RA_NPC: Word = 0;
-    const MUX_RA_RA: Word = 1;
-
-    const MUX_RB_RB: Word = 0;
-    const MUX_RB_IMM: Word = 1;
-
-    const MUX_BT_REJECT: Word = 0;
-    const MUX_BT_BRANCH: Word = 1;
-
-    pub fn new(port_collection: Rc<RefCell<PortCollection>>, id_stage: &IDStage) -> Self {
-        let ctrl_reg_imm_select = ConstantRegister::new(port_collection.clone(), 0, String::from("ex_ctrl_reg_imm_select"));
-        let ctrl_reg_ra_select = ConstantRegister::new(port_collection.clone(), 0, String::from("ex_ctrl_reg_ra_select"));
-        let ctrl_reg_rb_select = ConstantRegister::new(port_collection.clone(), 0, String::from("ex_ctrl_reg_rb_select"));
-
-        let ctrl_reg_alu_func = ConstantRegister::new(port_collection.clone(), 0, String::from("ex_ctrl_reg_alu_func"));
-        let ctrl_reg_comp_mode = ConstantRegister::new(port_collection.clone(), 0, String::from("ex_ctrl_reg_comp_mode"));
-        let ctrl_reg_branch_cond = ConstantRegister::new(port_collection.clone(), 0, String::from("ex_ctrl_reg_branch_cond"));
-
-        let ctrl_reg_branch_taken = ConstantRegister::new(port_collection.clone(), 0, String::from("ex_ctrl_reg_branch_taken"));
-
-        let mux_imm_select = Mux::<5>::new(
-            port_collection.clone(),
-            &[
-                id_stage.reg_imm_i.output_port,
-                id_stage.reg_imm_s.output_port,
-                id_stage.reg_imm_b.output_port,
-                id_stage.reg_imm_u.output_port,
-                id_stage.reg_imm_j.output_port,
-            ],
-            ctrl_reg_imm_select.output_port,
-            String::from("ex_mux_imm_select")
-        );
-
-        let mux_ra_select = Mux::<2>::new (
-            port_collection.clone(),
-            &[
-                id_stage.reg_npc.output_port,
-                id_stage.reg_ra.output_port
-            ],
-            ctrl_reg_ra_select.output_port,
-            String::from("ex_mux_ra_select")
-        );
-
-        let mux_rb_select = Mux::<2>::new (
-            port_collection.clone(),
-            &[
-                id_stage.reg_rb.output_port,
-                mux_imm_select.output_port
-            ],
-            ctrl_reg_rb_select.output_port,
-            String::from("ex_mux_rb_select")
-        );
-
-        let alu = ALU::new(
-            port_collection.clone(),
-            mux_ra_select.output_port,
-            mux_rb_select.output_port,
-            ctrl_reg_alu_func.output_port,
-            String::from("ex_alu")
-        );
-
-        let comp = Comparator::new(
-            port_collection.clone(),
-            id_stage.reg_ra.output_port,
-            id_stage.reg_rb.output_port,
-            ctrl_reg_comp_mode.output_port,
-            String::from("ex_comp")
-        );
-
-        let branch_test = BranchTester::new(
-            port_collection.clone(),
-            comp.output_port,
-            ctrl_reg_branch_cond.output_port,
-            String::from("ex_branch_test")
-        );
-
-        let reg_c_reject = ConstantRegister::new(port_collection.clone(), BranchTester::BRANCH_REJECT, String::from("ex_reg_c_reject"));
-
-        let mux_branch_taken = Mux::<2>::new(
-          port_collection.clone(),
-            &[reg_c_reject.output_port, branch_test.output_port],
-          ctrl_reg_branch_taken.output_port,
-            String::from("ex_mux_branch_taken")
-        );
-
-        // Pipeline registers
-        let reg_bt = Register::new(port_collection.clone(), mux_branch_taken.output_port, String::from("ex_reg_bt"));
-        let reg_alu = Register::new(port_collection.clone(), alu.output_port, String::from("ex_reg_alu"));
-        let reg_rb = Register::new(port_collection.clone(), id_stage.reg_rb.output_port, String::from("ex_reg_rb"));
-        let reg_rd = Register::new(port_collection.clone(), id_stage.reg_rd.output_port, String::from("ex_reg_rd"));
-        let reg_ir = Register::new(port_collection.clone(), id_stage.reg_ir.output_port, String::from("ex_ir"));
-
-        Self {
-            ctrl_reg_imm_select,
-            ctrl_reg_ra_select,
-            ctrl_reg_rb_select,
-            ctrl_reg_alu_func,
-            ctrl_reg_comp_mode,
-            ctrl_reg_branch_cond,
-            ctrl_reg_branch_taken,
-            reg_c_reject,
-            mux_imm_select,
-            mux_ra_select,
-            mux_rb_select,
-            mux_branch_taken,
-            comp,
-            branch_test,
-            alu,
-            reg_ir,
-            reg_bt,
-            reg_alu,
-            reg_rb,
-            reg_rd,
-            port_collection
-        }
-    }
-
-    /// Match function codes from a register-register instruction to an ALU operation.
-    fn match_alu_func_code_rr(func_3: Word, func_7: Word) -> Word {
-        match func_7 {
-            func_code_7::BASE => {
-                match func_3 {
-                    func_code_3::ADD        => ALU::OP_ADD,
-                    func_code_3::SLT        => ALU::OP_SLT,
-                    func_code_3::SLTU       => ALU::OP_SLTU,
-                    func_code_3::AND        => ALU::OP_AND,
-                    func_code_3::OR         => ALU::OP_OR,
-                    func_code_3::XOR        => ALU::OP_XOR,
-                    func_code_3::SLL_SUB    => ALU::OP_SLL,
-                    func_code_3::SRL_SRA    => ALU::OP_SRL,
-                    _                       => unreachable!()
+        #[test]
+        pub fn test_check_raw_hazard() {
+            /// Creates a test case expecting no RaW hazard
+            macro_rules! expect_no_hazard {
+                ($instr_r:literal, $instr_w:literal) => {
+                    assert_eq!(
+                        check_raw_hazard(
+                            assembler::encode_instruction_str($instr_r).unwrap(),
+                            assembler::encode_instruction_str($instr_w).unwrap()
+                        ),
+                        false
+                    );
                 }
             }
-            func_code_7::BASE_ALT => {
-                match func_3 {
-                    func_code_3::SLL_SUB    => ALU::OP_SUB,
-                    func_code_3::SRL_SRA    => ALU::OP_SRA,
-                    _                       => unreachable!()
+
+            /// Creates a test case expecting a RaW hazard
+            macro_rules! expect_hazard {
+                ($instr_r:literal, $instr_w:literal) => {
+                    assert_eq!(
+                        check_raw_hazard(
+                            assembler::encode_instruction_str($instr_r).unwrap(),
+                            assembler::encode_instruction_str($instr_w).unwrap()
+                        ),
+                        true
+                    );
                 }
             }
-            func_code_7::MULDIV => {
-                match func_3 {
-                    func_code_3::MUL => ALU::OP_MUL,
-                    _                => unreachable!()
-                }
-            }
-            _ => { unreachable!() }
+
+            // Only different registers
+            expect_no_hazard!("ADD x4 x5 x6", "ADD x1 x2 x3");
+            expect_no_hazard!("ADDI x2 x3 100", "ADDI x1 x0 50");
+            expect_no_hazard!("STORE x2 x3 100", "LOAD x1 x0 50");
+
+            // No RaW hazards on register 0
+            expect_no_hazard!("ADD x2 x0 x0", "ADDI x0 x1 50");
+            expect_no_hazard!("NOP", "NOP");
+
+            // RaW hazard
+            expect_hazard!("STORE x22 x0 50", "ADDI x22 x22 50");
+            expect_hazard!("ADD x1 x3 x4", "ADD x3 x4 x4");
+            expect_hazard!("ADD x1 x3 x4", "LOAD x3 x0 10");
         }
     }
-
-    /// Match function code(s) from a register-imm instruction to an ALU operation.
-    fn match_alu_func_code_ri(func_3: Word, func_7: Word) -> Word {
-        match func_3 {
-            func_code_3::ADDI        => ALU::OP_ADD,
-            func_code_3::SLTI        => ALU::OP_SLT,
-            func_code_3::SLTIU       => ALU::OP_SLTU,
-            func_code_3::ANDI        => ALU::OP_AND,
-            func_code_3::ORI         => ALU::OP_OR,
-            func_code_3::XORI        => ALU::OP_XOR,
-            func_code_3::SLLI        => ALU::OP_SLL,
-            func_code_3::SRLI_SRAI   => {
-                // A bit from the func 7 code determines the type of right shift
-                if func_7 & func_code_7::BASE_ALT != 0 { ALU::OP_SRA } else { ALU::OP_SRL }
-            },
-            _                        => unreachable!()
-        }
-    }
-
-    fn set_control_signals(&mut self, instruction: Word) {
-        let op_code = extract_op_code(instruction);
-        let (imm_select, ra_select, rb_select, alu_func, comp_mode, branch_cond, branch_taken) = match op_code {
-            op_code::OP => {
-                let funct_3 = extract_funct_3(instruction);
-                let funct_7 = extract_funct_7(instruction);
-                let alu_func_code = Self::match_alu_func_code_rr(funct_3, funct_7);
-
-                (0, Self::MUX_RA_RA, Self::MUX_RB_RB, alu_func_code, 0, 0, Self::MUX_BT_REJECT)
-            }
-            op_code::OP_IMM => {
-                let funct_3 = extract_funct_3(instruction);
-                let funct_7 = extract_funct_7(instruction);
-                let alu_func_code = Self::match_alu_func_code_ri(funct_3, funct_7);
-
-                (Self::MUX_IMM_I_TYPE, Self::MUX_RA_RA, Self::MUX_RB_IMM, alu_func_code, 0, 0, Self::MUX_BT_REJECT)
-            }
-            op_code::LOAD => {
-                (Self::MUX_IMM_I_TYPE, Self::MUX_RA_RA, Self::MUX_RB_IMM, 1, 0, 0, Self::MUX_BT_REJECT)
-            }
-            op_code::STORE => {
-                (Self::MUX_IMM_S_TYPE, Self::MUX_RA_RA, Self::MUX_RB_IMM, 1, 0, 0, Self::MUX_BT_REJECT)
-            }
-            op_code::JAL => {
-                todo!()
-            }
-            op_code::JALR => {
-                todo!()
-            }
-            op_code::BRANCH => {
-                let funct_3 = extract_funct_3(instruction);
-                let comp_mode = funct_3 >> 2;
-                let condition = funct_3 & 0b_011;
-                (Self::MUX_IMM_B_TYPE, Self::MUX_RA_NPC, Self::MUX_RB_IMM, ALU::OP_ADD, comp_mode, condition, Self::MUX_BT_BRANCH)
-            }
-            op_code::LUI => {
-                todo!()
-            }
-            op_code::AUIPC => {
-                todo!()
-            }
-            _ => { unreachable!() }
-        };
-
-        self.ctrl_reg_imm_select.constant_value = imm_select;
-        self.ctrl_reg_ra_select.constant_value = ra_select;
-        self.ctrl_reg_rb_select.constant_value = rb_select;
-        self.ctrl_reg_alu_func.constant_value = alu_func;
-        self.ctrl_reg_comp_mode.constant_value = comp_mode;
-        self.ctrl_reg_branch_cond.constant_value = branch_cond;
-        self.ctrl_reg_branch_taken.constant_value = branch_taken;
-    }
-}
-
-impl Component for EXStage {
-    fn process_cycle(&mut self) {
-        // Constants
-        self.reg_c_reject.process_cycle();
-
-        // Get current instruction
-        self.reg_ir.process_cycle();
-
-        // Set control signals
-        let instruction = self.port_collection.borrow().get_port_data(self.reg_ir.output_port);
-        self.set_control_signals(instruction);
-
-        // Push control signals
-        self.ctrl_reg_imm_select.process_cycle();
-        self.ctrl_reg_ra_select.process_cycle();
-        self.ctrl_reg_rb_select.process_cycle();
-        self.ctrl_reg_alu_func.process_cycle();
-        self.ctrl_reg_comp_mode.process_cycle();
-        self.ctrl_reg_branch_cond.process_cycle();
-        self.ctrl_reg_branch_taken.process_cycle();
-
-        // Main cycle
-        self.mux_imm_select.process_cycle();
-        self.mux_ra_select.process_cycle();
-        self.mux_rb_select.process_cycle();
-
-        self.alu.process_cycle();
-        self.comp.process_cycle();
-        self.branch_test.process_cycle();
-        self.mux_branch_taken.process_cycle();
-
-        // Pipeline registers
-        self.reg_bt.process_cycle();
-        self.reg_bt.process_cycle();
-        self.reg_alu.process_cycle();
-        self.reg_rd.process_cycle();
-        self.reg_rb.process_cycle();
-    }
-}
-
-/*
-Processor -- MEM Stage
- */
-
-pub struct MEMStage {
-    /// Enables writing to data memory
-    pub ctrl_reg_write_enable: ConstantRegister,
-
-    /// Sets the length mode for memory accesses
-    pub ctrl_reg_len_mode: ConstantRegister,
-
-    /// Data memory (read/write)
-    pub dmem: RWMemory,
-
-    /// Stores the result from memory fetch
-    pub reg_mem: Register,
-
-    /// Stores the result from the ALU
-    pub reg_alu: Register,
-
-    /// Stores the destination register
-    pub reg_rd: Register,
-
-    /// IR register for storing current instruction
-    pub reg_ir: Register,
-
-    /*
-    Pointer to port collection
-     */
-
-    pub port_collection: Rc<RefCell<PortCollection>>,
-}
-
-impl MEMStage {
-    pub fn new(port_collection: Rc<RefCell<PortCollection>>, ex_stage: &EXStage) -> Self {
-        // Control registers
-        let ctrl_reg_write_enable = ConstantRegister::new(port_collection.clone(), 0, String::from("mem_ctrl_reg_write_enable"));
-        let ctrl_reg_len_mode = ConstantRegister::new(port_collection.clone(), 0, String::from("mem_ctrl_reg_len_mode"));
-
-        // Data memory
-        let dmem = RWMemory::new(
-            port_collection.clone(),
-            ex_stage.reg_alu.output_port,
-            ctrl_reg_len_mode.output_port,
-            ex_stage.reg_rb.output_port,
-            ctrl_reg_write_enable.output_port,
-            String::from("mem_dmem")
-        );
-
-        // Pipeline registers
-        let reg_mem = Register::new(port_collection.clone(), dmem.output_port, String::from("mem_reg_mem"));
-        let reg_alu = Register::new(port_collection.clone(), ex_stage.reg_alu.output_port, String::from("mem_reg_alu"));
-        let reg_rd = Register::new(port_collection.clone(), ex_stage.reg_rd.output_port, String::from("mem_reg_rd"));
-        let reg_ir = Register::new(port_collection.clone(), ex_stage.reg_ir.output_port, String::from("mem_ir"));
-
-        Self {
-            ctrl_reg_write_enable,
-            ctrl_reg_len_mode,
-            dmem,
-            reg_mem,
-            reg_alu,
-            reg_rd,
-            reg_ir,
-            port_collection
-        }
-    }
-
-    fn set_control_signals(&mut self, instruction: Word) {
-        let op_code = extract_op_code(instruction);
-
-        // We use MEM_LEN_BYTE when the memory read result is discarded to avoid
-        // unaligned access errors from garbage inputs. (Byte addresses are always aligned)
-
-        let (write_enable, len_mode) = match op_code {
-            op_code::OP => {
-                (0, MEM_LEN_BYTE)
-            }
-            op_code::OP_IMM => {
-                (0, MEM_LEN_BYTE)
-            }
-            op_code::LOAD => {
-                (0, MEM_LEN_WORD)
-            }
-            op_code::STORE => {
-                (1, MEM_LEN_WORD)
-            }
-            op_code::JAL => {
-                (0, MEM_LEN_BYTE)
-            }
-            op_code::JALR => {
-                (0, MEM_LEN_BYTE)
-            }
-            op_code::BRANCH => {
-                (0, MEM_LEN_BYTE)
-            }
-            op_code::LUI => {
-                (0, MEM_LEN_BYTE)
-            }
-            op_code::AUIPC => {
-                (0, MEM_LEN_BYTE)
-            }
-            _ => { unreachable!() }
-        };
-
-        // Set control signals
-        self.ctrl_reg_write_enable.constant_value = write_enable;
-        self.ctrl_reg_len_mode.constant_value = len_mode;
-    }
-}
-
-impl Component for MEMStage {
-    fn process_cycle(&mut self) {
-        // Get current instruction
-        self.reg_ir.process_cycle();
-
-        // Set control signals
-        let instruction = self.port_collection.borrow().get_port_data(self.reg_ir.output_port);
-        self.set_control_signals(instruction);
-
-        // Push control signals
-        self.ctrl_reg_len_mode.process_cycle();
-        self.ctrl_reg_write_enable.process_cycle();
-
-        // Main cycle
-        self.dmem.process_cycle();
-
-        // Pipeline register
-        self.reg_alu.process_cycle();
-        self.reg_mem.process_cycle();
-        self.reg_rd.process_cycle();
-    }
-}
-
-/*
-Processor -- WB Stage
- */
-
-pub struct WBStage {
-    /// Controls which value to use for write back
-    pub ctrl_reg_value_select: ConstantRegister,
-
-    /// Controls whether a write is actually committed to the register file
-    pub ctrl_reg_write_enable: ConstantRegister,
-
-    /// Switches between ALU output and MEM output
-    pub mux_value: Mux<2>,
-
-    /// Holds the destination register of the write back
-    pub reg_rd: Register,
-
-    /// IR register for storing current instruction
-    pub reg_ir: Register,
-
-    /*
-    Pointer to port collection
-     */
-
-    pub port_collection: Rc<RefCell<PortCollection>>,
-}
-
-impl WBStage {
-    pub const MUX_VALUE_MEM: Word = 0;
-    pub const MUX_VALUE_ALU: Word = 1;
-
-    pub fn new(port_collection: Rc<RefCell<PortCollection>>, mem_stage: &MEMStage) -> Self {
-
-        let ctrl_reg_value_select = ConstantRegister::new(port_collection.clone(), 0, String::from("wb_ctrl_reg_value_select"));
-        let ctrl_reg_write_enable = ConstantRegister::new(port_collection.clone(), 0, String::from("wb_ctrl_reg_write_enable"));
-
-        let mux_value = Mux::<2>::new(
-            port_collection.clone(),
-            &[mem_stage.reg_mem.output_port, mem_stage.reg_alu.output_port],
-            ctrl_reg_value_select.output_port,
-            String::from("wb_mux_value")
-        );
-
-        let reg_rd = Register::new(port_collection.clone(), mem_stage.reg_rd.output_port, String::from("wb_rd"));
-        let reg_ir = Register::new(port_collection.clone(), mem_stage.reg_ir.output_port, String::from("wb_ir"));
-
-        Self {
-            ctrl_reg_value_select,
-            ctrl_reg_write_enable,
-            mux_value,
-            reg_rd,
-            reg_ir,
-            port_collection
-        }
-    }
-
-    fn set_control_signals(&mut self, instruction: Word) {
-        let op_code = extract_op_code(instruction);
-
-        let (value_select, write_enable) = match op_code {
-            op_code::OP => {
-                (Self::MUX_VALUE_ALU, 1)
-            }
-            op_code::OP_IMM => {
-                (Self::MUX_VALUE_ALU, 1)
-            }
-            op_code::LOAD => {
-                (Self::MUX_VALUE_MEM, 1)
-            }
-            op_code::STORE => {
-                (Self::MUX_VALUE_ALU, 0)
-            }
-            op_code::JAL => {
-                todo!()
-            }
-            op_code::JALR => {
-                todo!()
-            }
-            op_code::BRANCH => {
-                (Self::MUX_VALUE_ALU, 0)
-            }
-            op_code::LUI => {
-                todo!()
-            }
-            op_code::AUIPC => {
-                todo!()
-            }
-            _ => { unreachable!() }
-        };
-
-        // Set control signals
-        self.ctrl_reg_value_select.constant_value = value_select;
-        self.ctrl_reg_write_enable.constant_value = write_enable;
-    }
-}
-
-impl Component for WBStage {
-    fn process_cycle(&mut self) {
-        // Get current instruction
-        self.reg_ir.process_cycle();
-
-        // Set control signals
-        let instruction = self.port_collection.borrow().get_port_data(self.reg_ir.output_port);
-        self.set_control_signals(instruction);
-
-        // Push control signals
-        self.ctrl_reg_write_enable.process_cycle();
-        self.ctrl_reg_value_select.process_cycle();
-
-        // Main cycle
-        self.reg_rd.process_cycle();
-        self.mux_value.process_cycle();
-    }
-}
-
-/*
-Processor
- */
-
-pub struct Processor {
-    pub port_collection: Rc<RefCell<PortCollection>>,
-
-    pub if_stage: IFStage,
-    pub id_stage: IDStage,
-    pub ex_stage: EXStage,
-    pub mem_stage: MEMStage,
-    pub wb_stage: WBStage,
-
-    pub interlock_unit: InterlockUnit
-}
-
-impl Processor {
-    pub fn new() -> Self {
-        let port_collection = Rc::new(RefCell::new(PortCollection::new()));
-
-        let mut if_stage = IFStage::new(port_collection.clone());
-        let mut id_stage = IDStage::new(port_collection.clone(), &if_stage);
-        let ex_stage = EXStage::new(port_collection.clone(), &id_stage);
-        let mem_stage = MEMStage::new(port_collection.clone(), &ex_stage);
-        let wb_stage = WBStage::new(port_collection.clone(), &mem_stage);
-
-        let interlock_unit = InterlockUnit::new(
-            port_collection.clone(),
-            if_stage.reg_ir.output_port,
-            id_stage.reg_ir.output_port,
-            ex_stage.reg_ir.output_port,
-            String::from("IU")
-        );
-
-        // Connect Branch
-        if_stage.mux.inputs[1] = ex_stage.reg_alu.output_port;
-        if_stage.mux.selection_input = ex_stage.reg_bt.output_port;
-
-        // Connect Write back
-        id_stage.rf.set_write_inputs(
-            wb_stage.mux_value.output_port,
-            wb_stage.reg_rd.output_port,
-            wb_stage.ctrl_reg_write_enable.output_port
-        );
-
-        // Connect interlock_unit
-        if_stage.connect_interlock_unit(interlock_unit.out_not_stall);
-        id_stage.connect_interlock_unit(interlock_unit.out_not_stall);
-
-        // Initialize instruction registers with NOP
-        port_collection.borrow_mut().set_port_data(if_stage.reg_ir.output_port, NOP);
-        port_collection.borrow_mut().set_port_data(id_stage.reg_ir.output_port, NOP);
-        port_collection.borrow_mut().set_port_data(ex_stage.reg_ir.output_port, NOP);
-        port_collection.borrow_mut().set_port_data(mem_stage.reg_ir.output_port, NOP);
-        port_collection.borrow_mut().set_port_data(wb_stage.reg_ir.output_port, NOP);
-
-        Self {
-            port_collection,
-            if_stage,
-            id_stage,
-            ex_stage,
-            mem_stage,
-            wb_stage,
-            interlock_unit
-        }
-    }
-}
-
-impl Component for Processor {
-    fn process_cycle(&mut self) {
-        // Check if processor must stall
-        self.interlock_unit.process_cycle();
-
-        // Update stages
-        self.wb_stage.process_cycle();
-        self.mem_stage.process_cycle();
-        self.ex_stage.process_cycle();
-        self.id_stage.process_cycle();
-        self.if_stage.process_cycle();
-    }
-}
-
-#[test]
-pub fn test_processor() {
-    let mut processor = Processor::new();
-
-    // let program = assembler::assemble_program(
-    //     "\
-    //     MVI x1 30;\
-    //     MVI x2 20;\
-    //     MVI x3 880;\
-    //     MVI x4 80;\
-    //     \
-    //     ADD x1 x1 x2;\
-    //     NOP;\
-    //     SUB x10 x3 x4;\
-    //     NOP;\
-    //     NOP;\
-    //     ADD x1 x1 x10;\
-    //     "
-    // ).expect("Error compiling program");
-
-    // let program = assembler::assemble_program(
-    //     "\
-    //     MVI x1 30;\
-    //     MVI x2 80;\
-    //     ADD x1 x1 x2;\
-    //     MVI x3 200;\
-    //     STORE x1 x0 0;\
-    //     LOAD x10 x0 0;\
-    //     ADD x1 x10 x3;\
-    //     "
-    // ).expect("Error compiling program");
-
-    /*
-    i = 1;
-    while i <= 32
-        i *= 2
-     */
-    let program = assembler::assemble_program(
-        "\
-        MVI x1 1;\
-        MVI x2 2;\
-        MVI x3 32;\
-        MUL x1 x1 x2;\
-        BLEU x1 x3 -2;\
-        NOP;\
-        NOP;\
-        MVI x31 88;\
-        "
-    ).expect("Error compiling program");
-
-    processor.if_stage.imem.content = assembler::program_to_mem::<MEM_SIZE>(&program);
-
-    let mut num_stalled_cycles = 0;
-    let cycle_timeout = 500;
-
-    for i in 1..cycle_timeout {
-        processor.process_cycle();
-
-        let ports = processor.port_collection.borrow();
-
-        let stalled = ports.get_port_data(processor.interlock_unit.out_not_stall) == 0;
-        if stalled {
-            num_stalled_cycles += 1;
-        }
-
-        let reg_31_val = ports.get_port_data(processor.id_stage.rf.registers[31].output_port);
-        if reg_31_val == 88 {
-            println!("------- COMPLETED -------");
-            println!("Total cycles:         {}", i);
-            println!("Total cycles stalled: {}", num_stalled_cycles);
-            println!();
-            println!("Registers:");
-            println!("reg_1: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[1].output_port));
-            println!();
-
-            return;
-        }
-
-        // println!("----------- Cycle {} -----------", i);
-        // println!("id_stage: {}", processor.port_collection.borrow().get_port_data(processor.if_stage.reg_ir.output_port));
-        // println!("ex_stage: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.reg_ir.output_port));
-        // println!("mem_stage: {}", processor.port_collection.borrow().get_port_data(processor.ex_stage.reg_ir.output_port));
-        // println!("wb_stage: {}", processor.port_collection.borrow().get_port_data(processor.mem_stage.reg_ir.output_port));
-        // println!();
-
-        // println!("flags:");
-        // println!("stalled: {}", processor.port_collection.borrow().get_port_data(processor.interlock_unit.out_not_stall) == 0);
-        // println!();
-        //
-        println!("Registers:");
-        println!("reg_1: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[1].output_port));
-        println!("reg_10: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[10].output_port));
-        println!();
-    }
-
-    println!("------- TIMED OUT -------");
-    println!("Total cycles stalled: {}", num_stalled_cycles);
-    println!();
-    println!("Registers:");
-    println!("reg_1: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[1].output_port));
-    println!("reg_10: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[10].output_port));
-    println!();
 }

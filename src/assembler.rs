@@ -1,4 +1,4 @@
-use crate::risc_v::*;
+use crate::isa::*;
 use std::mem;
 
 macro_rules! check_num_params {
@@ -439,7 +439,7 @@ pub fn program_to_mem<const MEM_SIZE: usize>(program: &Vec<Word>) -> [u8; MEM_SI
 
     // Fill the rest with NOP instructions
     let start_idx = program.len();
-    let end_idx = (MEM_SIZE / 4);
+    let end_idx = MEM_SIZE / std::mem::size_of::<Word>();
 
     for i in start_idx..end_idx {
         let mem_offset = i * mem::size_of::<Word>();
@@ -454,24 +454,29 @@ pub fn program_to_mem<const MEM_SIZE: usize>(program: &Vec<Word>) -> [u8; MEM_SI
     return memory;
 }
 
-#[test]
-pub fn test_token_to_literal() {
-    assert_eq!(token_to_literal("2x2"), None);
-    assert_eq!(token_to_literal(""), None);
-    assert_eq!(token_to_literal("a"), None);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    assert_eq!(token_to_literal("0022"), Some(Literal::Unsigned(22)));
-    assert_eq!(token_to_literal("-22"), Some(Literal::Signed(-22)));
-    assert_eq!(token_to_literal("8192"), Some(Literal::Unsigned(8192)));
-}
+    #[test]
+    pub fn test_token_to_literal() {
+        assert_eq!(token_to_literal("2x2"), None);
+        assert_eq!(token_to_literal(""), None);
+        assert_eq!(token_to_literal("a"), None);
 
-#[test]
-pub fn test_literal_fits_in() {
-    assert_eq!(Literal::Unsigned(1 << 10).fits_in(10), false);
-    assert_eq!(Literal::Unsigned((1 << 10) - 1).fits_in(10), true);
+        assert_eq!(token_to_literal("0022"), Some(Literal::Unsigned(22)));
+        assert_eq!(token_to_literal("-22"), Some(Literal::Signed(-22)));
+        assert_eq!(token_to_literal("8192"), Some(Literal::Unsigned(8192)));
+    }
 
-    assert_eq!(Literal::Signed(1 << 9).fits_in(10), false);
-    assert_eq!(Literal::Signed((1 << 9) - 1).fits_in(10), true);
-    assert_eq!(Literal::Signed(-(1 << 9) - 1).fits_in(10), false);
-    assert_eq!(Literal::Signed(-(1 << 9)).fits_in(10), true);
+    #[test]
+    pub fn test_literal_fits_in() {
+        assert_eq!(Literal::Unsigned(1 << 10).fits_in(10), false);
+        assert_eq!(Literal::Unsigned((1 << 10) - 1).fits_in(10), true);
+
+        assert_eq!(Literal::Signed(1 << 9).fits_in(10), false);
+        assert_eq!(Literal::Signed((1 << 9) - 1).fits_in(10), true);
+        assert_eq!(Literal::Signed(-(1 << 9) - 1).fits_in(10), false);
+        assert_eq!(Literal::Signed(-(1 << 9)).fits_in(10), true);
+    }
 }

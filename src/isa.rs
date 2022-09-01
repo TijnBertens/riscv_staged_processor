@@ -1,8 +1,11 @@
-use std::mem;
+/*
+Based on the RISC-V ISA:
+https://riscv.org/technical/specifications/
+ */
 
 /// OP codes
 pub mod op_code {
-    use crate::risc_v::Word;
+    use crate::isa::Word;
 
     pub const OP: Word = 0;
     pub const OP_IMM: Word = 1;
@@ -19,7 +22,7 @@ pub mod op_code {
 }
 
 pub mod func_code_3 {
-    use crate::risc_v::Word;
+    use crate::isa::Word;
 
     // Conditional branches
     // First bit determines unsigned vs signed versions, last 2 bit determine the condition.
@@ -56,15 +59,14 @@ pub mod func_code_3 {
 }
 
 pub mod func_code_7 {
-    use crate::risc_v::Word;
+    use crate::isa::Word;
 
     pub const BASE: Word = 0b_0000000;
     pub const BASE_ALT: Word = 0b_0100000;
     pub const MULDIV: Word = 0b_0000001;
 }
 
-// CPU data width
-pub const CPU_WIDTH: usize = 32;
+// CPU data types
 pub type Word = u32;
 pub type SWord = i32;
 

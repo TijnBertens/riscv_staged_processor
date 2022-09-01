@@ -1,4 +1,4 @@
-use crate::risc_v::Word;
+use crate::isa::Word;
 
 pub type PortID = usize;
 
