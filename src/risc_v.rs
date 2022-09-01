@@ -150,7 +150,7 @@ pub fn extract_imm_j_type(instruction: Word) -> Word {
 
     if is_negative {
         const PADDING_NEG: Word = 0b_11111111_11110000_00000000_00000000;
-        (imm_value | PADDING_NEG) << 1
+        (imm_value | PADDING_NEG) << 2
     } else {
         (imm_value) << 1
     }

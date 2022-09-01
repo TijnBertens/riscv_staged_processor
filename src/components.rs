@@ -2654,10 +2654,10 @@ impl EXStage {
                 (Self::MUX_IMM_S_TYPE, Self::MUX_RA_RA, Self::MUX_RB_IMM, 1, 0, 0, Self::MUX_BT_REJECT)
             }
             op_code::JAL => {
-                (0, 0, 0, 0, 0, 0, 0)
+                todo!()
             }
             op_code::JALR => {
-                (0, 0, 0, 0, 0, 0, 0)
+                todo!()
             }
             op_code::BRANCH => {
                 let funct_3 = extract_funct_3(instruction);
@@ -2666,10 +2666,10 @@ impl EXStage {
                 (Self::MUX_IMM_B_TYPE, Self::MUX_RA_NPC, Self::MUX_RB_IMM, ALU::OP_ADD, comp_mode, condition, Self::MUX_BT_BRANCH)
             }
             op_code::LUI => {
-                (0, 0, 0, 0, 0, 0, 0)
+                todo!()
             }
             op_code::AUIPC => {
-                (0, 0, 0, 0, 0, 0, 0)
+                todo!()
             }
             _ => { unreachable!() }
         };
