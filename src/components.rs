@@ -5,6 +5,7 @@ use std::ops::Deref;
 use std::mem::MaybeUninit;
 use std::ptr::write;
 use crate::risc_v::*;
+use crate::assembler;
 
 /*
 Traits
@@ -1875,6 +1876,18 @@ pub struct ImmSignExtender {
     pub name: String
 }
 
+pub struct InterlockUnit {
+    pub in_id_instr: PortID,
+    pub in_ex_instr: PortID,
+    pub in_mem_instr: PortID,
+
+    pub out_not_stall: PortID,
+    stall_timer: Word,
+
+    pub port_collection: Rc<RefCell<PortCollection>>,
+    pub name: String
+}
+
 impl Component for ImmSignExtender {
     fn process_cycle(&mut self) {
         let mut port_collection = self.port_collection.borrow_mut();
@@ -1892,6 +1905,78 @@ impl Component for ImmSignExtender {
         port_collection.set_port_data(self.out_b_type, imm_b_type);
         port_collection.set_port_data(self.out_u_type, imm_u_type);
         port_collection.set_port_data(self.out_j_type, imm_j_type);
+    }
+}
+
+/// Checks whether a RaW hazard exists between two given instructions.
+fn check_raw_hazard(id_instr: Word, other_instr: Word) -> bool {
+    let op_code_id = extract_op_code(id_instr);
+    let op_code_other = extract_op_code(other_instr);
+
+    let conflict = match op_code_id {
+        op_code::OP | op_code::BRANCH | op_code::STORE => {
+            // ID reads two registers
+            let rs1 = extract_rs1(id_instr);
+            let rs2 = extract_rs2(id_instr);
+
+             match op_code_other {
+                op_code::OP | op_code::OP_IMM | op_code::LOAD | op_code::JAL |
+                op_code::JALR | op_code::LUI | op_code::AUIPC => {
+                    // Other instruction writes to register
+                    let rd = extract_rd(other_instr);
+                    // NOTE: No RaW conflict can exist on register 0
+                    (rd != 0) && (rd == rs1 || rd == rs2)
+                }
+                _ => false
+            }
+        }
+        op_code::OP_IMM | op_code::JALR => {
+            // ID reads one register
+            let rs1 = extract_rs1(id_instr);
+
+            match op_code_other {
+                op_code::OP | op_code::OP_IMM | op_code::LOAD | op_code::JAL |
+                op_code::JALR | op_code::LUI | op_code::AUIPC => {
+                    // Other instruction writes to register
+                    let rd = extract_rd(other_instr);
+                    // NOTE: No RaW conflict can exist on register 0
+                    (rd != 0) && (rd == rs1)
+                }
+                _ => false
+            }
+        }
+        _ => {
+            // No read is performed
+            false
+        }
+    };
+
+    return conflict;
+}
+
+impl Component for InterlockUnit {
+    fn process_cycle(&mut self) {
+        let mut port_collection = self.port_collection.borrow_mut();
+
+        let id_instr = port_collection.get_port_data(self.in_id_instr);
+        let ex_instr = port_collection.get_port_data(self.in_ex_instr);
+        let mem_instr = port_collection.get_port_data(self.in_mem_instr);
+
+        if self.stall_timer == 0 {
+            if check_raw_hazard(id_instr, ex_instr) {
+                // Must stall for 2 cycles
+                self.stall_timer = 2;
+            } else if check_raw_hazard(id_instr, mem_instr) {
+                // Only stall for a single cycle
+                self.stall_timer = 1
+            }
+        } else {
+            self.stall_timer = self.stall_timer - 1;
+        }
+
+        let not_stall = !(self.stall_timer >= 1);
+
+        port_collection.set_port_data(self.out_not_stall, not_stall.into());
     }
 }
 
@@ -1914,6 +1999,65 @@ impl ImmSignExtender {
             name
         }
     }
+}
+
+impl InterlockUnit {
+    pub fn new(port_collection: Rc<RefCell<PortCollection>>, in_id_instr: PortID,
+               in_ex_instr: PortID, in_mem_instr: PortID, name: String) -> Self {
+        let out_not_stall = port_collection.borrow_mut().register_port(PORT_DEFAULT_VALUE, format!("{}_{}", name, String::from("not_stall")));
+
+        Self {
+            in_id_instr,
+            in_ex_instr,
+            in_mem_instr,
+            out_not_stall,
+            stall_timer: 0,
+            port_collection,
+            name
+        }
+    }
+}
+
+#[test]
+pub fn test_check_raw_hazard() {
+    /// Creates a test case expecting no RaW hazard
+    macro_rules! expect_no_hazard {
+        ($instr_r:literal, $instr_w:literal) => {
+            assert_eq!(
+                check_raw_hazard(
+                    assembler::encode_instruction_str($instr_r).unwrap(),
+                    assembler::encode_instruction_str($instr_w).unwrap()
+                ),
+                false
+            );
+        }
+    }
+    /// Creates a test case expecting a RaW hazard
+    macro_rules! expect_hazard {
+        ($instr_r:literal, $instr_w:literal) => {
+            assert_eq!(
+                check_raw_hazard(
+                    assembler::encode_instruction_str($instr_r).unwrap(),
+                    assembler::encode_instruction_str($instr_w).unwrap()
+                ),
+                true
+            );
+        }
+    }
+
+    // Only different registers
+    expect_no_hazard!("ADD x4 x5 x6", "ADD x1 x2 x3");
+    expect_no_hazard!("ADDI x2 x3 100", "ADDI x1 x0 50");
+    expect_no_hazard!("STORE x2 x3 100", "LOAD x1 x0 50");
+
+    // No RaW hazards on register 0
+    expect_no_hazard!("ADD x2 x0 x0", "ADDI x0 x1 50");
+    expect_no_hazard!("NOP", "NOP");
+
+    // RaW hazard
+    expect_hazard!("STORE x22 x0 50", "ADDI x22 x22 50");
+    expect_hazard!("ADD x1 x3 x4", "ADD x3 x4 x4");
+    expect_hazard!("ADD x1 x3 x4", "LOAD x3 x0 10");
 }
 
 /*
@@ -2018,7 +2162,7 @@ pub struct IDStage {
     pub reg_shift_rs1: BitSelectionRegister<15, 5>,
 
     /// Source 2 register number
-    pub reg_shift_rs2: BitSelectionRegister<19, 5>,
+    pub reg_shift_rs2: BitSelectionRegister<20, 5>,
 
     /*
     Register file and sign extend
@@ -2075,11 +2219,8 @@ impl IDStage {
 
         // Registers used for extracting register numbers from instruction
         let reg_shift_rs1 = BitSelectionRegister::<15, 5>::new(port_collection.clone(), if_stage.reg_ir.output_port, String::from("id_reg_shift_rs1"));
-        let reg_shift_rs2 = BitSelectionRegister::<19, 5>::new(port_collection.clone(), if_stage.reg_ir.output_port, String::from("id_reg_shift_rs2"));
+        let reg_shift_rs2 = BitSelectionRegister::<20, 5>::new(port_collection.clone(), if_stage.reg_ir.output_port, String::from("id_reg_shift_rs2"));
         let reg_shift_rd = BitSelectionRegister::<7, 5>::new(port_collection.clone(), if_stage.reg_ir.output_port, String::from("id_reg_shift_rsd"));
-
-        // Control signal for write-enable on the register file
-        let ctrl_reg_write_enable = ConstantRegister::new(port_collection.clone(), 0, String::from("id_ctrl_reg_write_enable"));
 
         // Register file
         let mut rf = RegisterFile::<32>::new(
@@ -2430,7 +2571,7 @@ impl EXStage {
     }
 
     fn set_control_signals(&mut self, instruction: Word) {
-        let op_code = extract_op_code(instruction) as usize;
+        let op_code = extract_op_code(instruction);
         let (imm_select, ra_select, rb_select, alu_func, comp_mode, branch_cond, branch_taken) = match op_code {
             op_code::OP => {
                 let funct_3 = extract_funct_3(instruction);
@@ -2588,7 +2729,7 @@ impl MEMStage {
     }
 
     fn set_control_signals(&mut self, instruction: Word) {
-        let op_code = extract_op_code(instruction) as usize;
+        let op_code = extract_op_code(instruction);
 
         // We use MEM_LEN_BYTE when the memory read result is discarded to avoid
         // unaligned access errors from garbage inputs. (Byte addresses are always aligned)
@@ -2710,7 +2851,7 @@ impl WBStage {
     }
 
     fn set_control_signals(&mut self, instruction: Word) {
-        let op_code = extract_op_code(instruction) as usize;
+        let op_code = extract_op_code(instruction);
 
         let (value_select, write_enable) = match op_code {
             op_code::OP => {
@@ -2835,30 +2976,116 @@ impl Component for Processor {
 
 #[test]
 pub fn test_processor() {
-    println!("hallo1");
-
     let mut processor = Processor::new();
 
-    let inst = NOP | (30 << 20) | 1 << 7;
-    let inst_bytes = inst.to_be_bytes();
+    // let program = assembler::assemble_program(
+    //     "\
+    //     MVI x1 30;\
+    //     MVI x2 20;\
+    //     MVI x3 880;\
+    //     MVI x4 80;\
+    //     \
+    //     ADD x1 x1 x2;\
+    //     NOP;\
+    //     SUB x10 x3 x4;\
+    //     NOP;\
+    //     NOP;\
+    //     ADD x1 x1 x10;\
+    //     "
+    // ).expect("Error compiling program");
 
-    println!("{:b}", inst);
+    let program = assembler::assemble_program(
+        "\
+        MVI x1 30;\
+        MVI x2 80;\
+        NOP;\
+        NOP;\
+        ADD x1 x1 x2;\
+        NOP;\
+        MVI x3 200;\
+        STORE x1 x0 0;\
+        LOAD x10 x0 0;\
+        NOP;\
+        NOP;\
+        ADD x1 x10 x3;\
+        "
+    ).expect("Error compiling program");
 
-    processor.if_stage.imem.content[0] = inst_bytes[0];
-    processor.if_stage.imem.content[1] = inst_bytes[1];
-    processor.if_stage.imem.content[2] = inst_bytes[2];
-    processor.if_stage.imem.content[3] = inst_bytes[3];
+    processor.if_stage.imem.content = assembler::program_to_mem::<MEM_SIZE>(&program);
 
-    for _ in 0..7 {
+    for i in 0..16 {
         processor.process_cycle();
 
+        println!("----------- Cycle {} -----------", i);
         println!("if_stage: {}", processor.port_collection.borrow().get_port_data(processor.if_stage.reg_ir.output_port));
         println!("id_stage: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.reg_ir.output_port));
         println!("ex_stage: {}", processor.port_collection.borrow().get_port_data(processor.ex_stage.reg_ir.output_port));
         println!("mem_stage: {}", processor.port_collection.borrow().get_port_data(processor.mem_stage.reg_ir.output_port));
         println!("wb_stage: {}", processor.port_collection.borrow().get_port_data(processor.wb_stage.reg_ir.output_port));
 
-        println!("reg_1: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[1].output_port));
         println!();
+        println!("Registers:");
+        println!("reg_1: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[1].output_port));
+        println!("reg_10: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[10].output_port));
+        println!();
+    }
+}
+
+#[test]
+fn tmp() {
+    const WRITE: Word = 2;
+    const READ: Word = 1;
+    const OTHER: Word = 0;
+
+    let mut count = 0;
+    let mut not_stall: bool = false;
+
+    fn has_hazard(rd_instr: Word, wr_instr: Word) -> bool {
+        rd_instr == READ && wr_instr == WRITE
+    }
+
+    let mut if_stage = OTHER;
+    let mut id_stage = OTHER;
+    let mut ex_stage = OTHER;
+    let mut mem_stage = OTHER;
+    let mut wb_stage = OTHER;
+
+    let mut pc = 0;
+    let program = vec![
+        WRITE,
+        READ,
+        READ
+    ];
+
+    println!("{} \t {} \t {} \t {} \t {} \t\t {} \t {}", "IF", "ID", "EX", "MEM", "WB", "S", "C");
+
+    for _ in 0..10 {
+        wb_stage = mem_stage;
+        mem_stage = ex_stage;
+        ex_stage = if not_stall { id_stage } else { ex_stage };
+        id_stage = if not_stall { if_stage } else { id_stage };
+
+        pc = if not_stall { pc + 1 } else { pc };
+        if_stage = *program.get(pc).unwrap_or((&OTHER));
+
+        if count == 0 {
+            if has_hazard(id_stage, ex_stage) {
+                count = 3;
+            } else if has_hazard(id_stage, mem_stage) {
+                count = 2
+            }
+        } else if count == 1 {
+            if has_hazard(id_stage, ex_stage) {
+                count = 3;
+            } else {
+                count = count - 1
+            }
+        } else {
+            count = count - 1;
+        }
+
+        not_stall = !(count >= 2);
+
+        println!("{} \t {} \t {} \t {} \t {} \t\t {} \t {}", if_stage, id_stage, ex_stage, mem_stage, wb_stage, not_stall, count);
     }
 }

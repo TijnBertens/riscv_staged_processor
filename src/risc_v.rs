@@ -1,17 +1,21 @@
+use std::mem;
+
 /// OP codes
 pub mod op_code {
-    pub const OP: usize = 0;
-    pub const OP_IMM: usize = 1;
+    use crate::risc_v::Word;
 
-    pub const LOAD: usize = 2;
-    pub const STORE: usize = 3;
+    pub const OP: Word = 0;
+    pub const OP_IMM: Word = 1;
 
-    pub const JAL: usize = 4;
-    pub const JALR: usize = 5;
-    pub const BRANCH: usize = 6;
+    pub const LOAD: Word = 2;
+    pub const STORE: Word = 3;
 
-    pub const LUI: usize = 7;
-    pub const AUIPC: usize = 8;
+    pub const JAL: Word = 4;
+    pub const JALR: Word = 5;
+    pub const BRANCH: Word = 6;
+
+    pub const LUI: Word = 7;
+    pub const AUIPC: Word = 8;
 }
 
 pub mod func_code_3 {
@@ -157,12 +161,58 @@ pub fn extract_op_code(instruction: Word) -> Word {
     instruction & MASK_OPCODE
 }
 
-// Extracts the funct 3 code from a given instruction word
+/// Extracts the funct 3 code from a given instruction word
 pub fn extract_funct_3(instruction: Word) -> Word {
     (instruction & MASK_FUNCT_3) >> 12
 }
 
-// Extracts the funct 7 code from a given instruction word
+/// Extracts the funct 7 code from a given instruction word
 pub fn extract_funct_7(instruction: Word) -> Word {
     (instruction & MASK_FUNCT_7) >> 25
+}
+
+/// Extracts the rs1 number from a given instruction word
+pub fn extract_rs1(instruction: Word) -> Word {
+    (instruction & MASK_RS1) >> 15
+}
+
+/// Extracts the rs2 number from a given instruction word
+pub fn extract_rs2(instruction: Word) -> Word {
+    (instruction & MASK_RS2) >> 20
+}
+
+pub fn extract_rd(instruction: Word) -> Word {
+    (instruction & MASK_RD) >> 7
+}
+
+/// Builds an R-type instruction from its given components.
+pub const fn build_instruction_r_type(op_code: Word, func_7: Word, func_3: Word,
+                                      dest: Word, s1: Word, s2: Word) -> Word {
+    op_code |
+        (dest << 7) |
+        (func_3 << 12) |
+        (s1 << 15) |
+        (s2 << 20) |
+        (func_7 << 25)
+}
+
+/// Builds an I-type instruction from its given components.
+pub const fn build_instruction_i_type(op_code: Word, func_3: Word,
+                                      dest: Word, s1: Word, imm: Word) -> Word {
+    op_code |
+        (dest << 7) |
+        (func_3 << 12) |
+        (s1 << 15) |
+        (imm << 20)
+}
+
+/// Builds an S-type instruction from its given components.
+pub const fn build_instruction_s_type(op_code: Word, func_3: Word,
+                                      s1: Word, s2: Word, imm: Word) -> Word {
+    op_code |
+        ((imm & 0b_011111) << 7) |
+        (func_3 << 12) |
+        (s1 << 15) |
+        (s2 << 20) |
+        ((imm & 0b_0111111100000) << (25 - 5))
 }

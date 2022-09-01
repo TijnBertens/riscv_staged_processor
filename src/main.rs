@@ -1,6 +1,7 @@
 mod circuit;
 mod components;
 mod risc_v;
+mod assembler;
 
 use std::rc::Rc;
 use std::cell::RefCell;
