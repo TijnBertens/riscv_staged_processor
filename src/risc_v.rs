@@ -133,7 +133,7 @@ pub fn extract_imm_s_type(instruction: Word) -> Word {
 
 /// Extracts and sign-extends the immediate field from a given B-type instruction word.
 pub fn extract_imm_b_type(instruction: Word) -> Word {
-    extract_imm_s_type(instruction) << 1
+    extract_imm_s_type(instruction) << 2
 }
 
 /// Extracts and sign-extends the immediate field from a given U-type instruction word.
@@ -215,4 +215,10 @@ pub const fn build_instruction_s_type(op_code: Word, func_3: Word,
         (s1 << 15) |
         (s2 << 20) |
         ((imm & 0b_0111111100000) << (25 - 5))
+}
+
+/// Builds a B-type instruction from its given components.
+pub const fn build_instruction_b_type(op_code: Word, func_3: Word,
+                                      s1: Word, s2: Word, imm: Word) -> Word {
+    build_instruction_s_type(op_code, func_3, s1, s2, imm)
 }

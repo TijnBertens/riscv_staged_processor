@@ -155,12 +155,68 @@ pub fn encode_instruction(tokens: &Vec<&str>) -> Result<Word, String> {
             parse_param!(tokens[3] => REG src2);
             build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::ADD, dst, src1, src2)
         }
+        "SLT" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => REG src2);
+            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SLT, dst, src1, src2)
+        }
+        "SLTU" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => REG src2);
+            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SLTU, dst, src1, src2)
+        }
+        "AND" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => REG src2);
+            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::AND, dst, src1, src2)
+        }
+        "OR" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => REG src2);
+            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::OR, dst, src1, src2)
+        }
+        "XOR" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => REG src2);
+            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::XOR, dst, src1, src2)
+        }
+        "SLL" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => REG src2);
+            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SLL_SUB, dst, src1, src2)
+        }
         "SUB" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
             build_instruction_r_type(op_code::OP, func_code_7::BASE_ALT, func_code_3::SLL_SUB, dst, src1, src2)
+        }
+        "SRL" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => REG src2);
+            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SRL_SRA, dst, src1, src2)
+        }
+        "SRA" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => REG src2);
+            build_instruction_r_type(op_code::OP, func_code_7::BASE_ALT, func_code_3::SRL_SRA, dst, src1, src2)
         }
 
         /*
@@ -170,8 +226,142 @@ pub fn encode_instruction(tokens: &Vec<&str>) -> Result<Word, String> {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
-            parse_param!(tokens[3] => IMM imm);
+            parse_param!(tokens[3] => IMM imm (12));
             build_instruction_i_type(op_code::OP_IMM, func_code_3::ADDI, dst, src1, imm)
+        }
+        "SLTI" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => IMM imm (12));
+            build_instruction_i_type(op_code::OP_IMM, func_code_3::SLTI, dst, src1, imm)
+        }
+        "SLTIU" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => IMM imm (12));
+            build_instruction_i_type(op_code::OP_IMM, func_code_3::SLTIU, dst, src1, imm)
+        }
+        "ANDI" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => IMM imm (12));
+            build_instruction_i_type(op_code::OP_IMM, func_code_3::ANDI, dst, src1, imm)
+        }
+        "ORI" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => IMM imm (12));
+            build_instruction_i_type(op_code::OP_IMM, func_code_3::ORI, dst, src1, imm)
+        }
+        "XORI" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => IMM imm (12));
+            build_instruction_i_type(op_code::OP_IMM, func_code_3::XORI, dst, src1, imm)
+        }
+        "SLLI" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => IMM imm (5));
+            build_instruction_i_type(op_code::OP_IMM, func_code_3::SLLI, dst, src1, imm)
+        }
+        "SRLI" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => IMM imm (5));
+            build_instruction_i_type(op_code::OP_IMM, func_code_3::SRLI_SRAI, dst, src1, imm)
+        }
+        "SRAI" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => IMM imm (5));
+            build_instruction_i_type(op_code::OP_IMM, func_code_3::SRLI_SRAI, dst, src1, imm | 0b0100000_00000)
+        }
+
+        /*
+        BRANCH
+         */
+        "BEQ" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG src1);
+            parse_param!(tokens[2] => REG src2);
+            parse_param!(tokens[3] => IMM offset (12));
+            build_instruction_b_type(op_code::BRANCH, func_code_3::BEQ, src1, src2, offset)
+        }
+        "BNE" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG src1);
+            parse_param!(tokens[2] => REG src2);
+            parse_param!(tokens[3] => IMM offset (12));
+            build_instruction_b_type(op_code::BRANCH, func_code_3::BNE, src1, src2, offset)
+        }
+        "BLT" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG src1);
+            parse_param!(tokens[2] => REG src2);
+            parse_param!(tokens[3] => IMM offset (12));
+            build_instruction_b_type(op_code::BRANCH, func_code_3::BLT, src1, src2, offset)
+        }
+        "BLTU" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG src1);
+            parse_param!(tokens[2] => REG src2);
+            parse_param!(tokens[3] => IMM offset (12));
+            build_instruction_b_type(op_code::BRANCH, func_code_3::BLTU, src1, src2, offset)
+        }
+        "BGE" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG src1);
+            parse_param!(tokens[2] => REG src2);
+            parse_param!(tokens[3] => IMM offset (12));
+            build_instruction_b_type(op_code::BRANCH, func_code_3::BGE, src1, src2, offset)
+        }
+        "BGEU" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG src1);
+            parse_param!(tokens[2] => REG src2);
+            parse_param!(tokens[3] => IMM offset (12));
+            build_instruction_b_type(op_code::BRANCH, func_code_3::BGEU, src1, src2, offset)
+        }
+        "BLE" => {
+            // Uses BGE with swapped operands
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG src1);
+            parse_param!(tokens[2] => REG src2);
+            parse_param!(tokens[3] => IMM offset (12));
+            build_instruction_b_type(op_code::BRANCH, func_code_3::BGE, src2, src1, offset)
+        }
+        "BLEU" => {
+            // Uses BGEU with swapped operands
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG src1);
+            parse_param!(tokens[2] => REG src2);
+            parse_param!(tokens[3] => IMM offset (12));
+            build_instruction_b_type(op_code::BRANCH, func_code_3::BGEU, src2, src1, offset)
+        }
+        "BGT" => {
+            // Uses BLT with swapped operands
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG src1);
+            parse_param!(tokens[2] => REG src2);
+            parse_param!(tokens[3] => IMM offset (12));
+            build_instruction_b_type(op_code::BRANCH, func_code_3::BLT, src2, src1, offset)
+        }
+        "BGTU" => {
+            // Uses BLTU with swapped operands
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG src1);
+            parse_param!(tokens[2] => REG src2);
+            parse_param!(tokens[3] => IMM offset (12));
+            build_instruction_b_type(op_code::BRANCH, func_code_3::BLTU, src2, src1, offset)
         }
 
         /*
@@ -190,6 +380,17 @@ pub fn encode_instruction(tokens: &Vec<&str>) -> Result<Word, String> {
             parse_param!(tokens[2] => REG base);
             parse_param!(tokens[3] => IMM offset);
             build_instruction_s_type(op_code::STORE, 0, base, src, offset)
+        }
+
+        /*
+        Extension
+         */
+        "MUL" => {
+            check_num_params!(tokens, 3);
+            parse_param!(tokens[1] => REG dst);
+            parse_param!(tokens[2] => REG src1);
+            parse_param!(tokens[3] => REG src2);
+            build_instruction_r_type(op_code::OP, func_code_7::MULDIV, func_code_3::MUL, dst, src1, src2)
         }
 
 

@@ -335,6 +335,12 @@ pub struct RWMemory {
 }
 
 fn mem_fetch(mem_content: &[u8; MEM_SIZE], address: Word, length_input: Word) -> Word {
+    // NOTE: Make sure the address is valid. Really, there should be some kind of error that occurs
+    // when fetching an illegal memory address. However, we perform reads on every cycle, which
+    // means there can be garbage in the address without there being anything wrong. Sanitizing
+    // the address prevents an index-out-of-bounds error in this case.
+    let address = address % (MEM_SIZE as Word);
+
     if length_input == MEM_LEN_WORD {
         assert_eq!(address % 4, 0, "Unaligned memory access for MEM_LEN_WORD! address: {}", address);
 
@@ -869,6 +875,12 @@ impl Component for ALU {
             Self::OP_MUL => {
                 in_a.wrapping_mul(in_b)
             }
+            Self::OP_BYPASS_A => {
+                in_a
+            }
+            Self::OP_BYPASS_B => {
+                in_b
+            }
             _ => { unreachable!() }
         };
 
@@ -988,6 +1000,9 @@ impl ALU {
     // pub const OP_MULH: Word = 11;
     // pub const OP_MULHS: Word = 12;
     // pub const OP_MULHSU: Word = 13;
+
+    pub const OP_BYPASS_A: Word = 11;
+    pub const OP_BYPASS_B: Word = 12;
 
     pub fn new(port_collection: Rc<RefCell<PortCollection>>, in_a: PortID, in_b: PortID, in_func: PortID, name: String) -> Self {
         let output_port_id = port_collection.borrow_mut().register_port(PORT_DEFAULT_VALUE, name.clone() + ".out");
@@ -1330,6 +1345,9 @@ pub fn test_alu_signed() {
         (ALU::OP_SUB, -80, 8, -88),
         (ALU::OP_SUB, -88, -8, -80),
 
+        (ALU::OP_BYPASS_A, -88, -8, -88),
+        (ALU::OP_BYPASS_B, -88, -8, -8),
+
         (ALU::OP_AND, 0b_101010, 0b_001110, 0b_001010),
         (ALU::OP_OR, 0b_101010, 0b_001110, 0b_101110),
         (ALU::OP_XOR, 0b_101010, 0b_001110, 0b_100100),
@@ -1382,6 +1400,9 @@ pub fn test_alu_unsigned() {
         // FUNC, A, B, EXPECTATION
         (ALU::OP_ADD, 80, 8, 88),
         (ALU::OP_SUB, 88, 8, 80),
+
+        (ALU::OP_BYPASS_A, 88, 8, 88),
+        (ALU::OP_BYPASS_B, 88, 8, 8),
 
         (ALU::OP_AND, 0b_101010, 0b_001110, 0b_001010),
         (ALU::OP_OR, 0b_101010, 0b_001110, 0b_101110),
@@ -1962,20 +1983,38 @@ impl Component for InterlockUnit {
         let ex_instr = port_collection.get_port_data(self.in_ex_instr);
         let mem_instr = port_collection.get_port_data(self.in_mem_instr);
 
+        // NOTE: The stall timer is used to keep track of how many cycles the CPU should stall for,
+        // as well as to guard against false hazards generated as a consequence of stalling. When
+        // the CPU detects a hazard, and an instruction is stalled in the ID stage (so before being
+        // issued), the previously issued instruction is repeated in the EX stage as long as the
+        // stalled instruction is not ready to be issued. These repeated 'phantom' instructions can
+        // cause new hazards for future instructions, though their result is already in the register
+        // file.
+        //
+        // To prevent stalling in this case, the stall_timer keeps track of where the phantom
+        // instructions are. When the timer is 2, there are still phantom instructions in the EX and
+        // MEM stages. When the timer hits 1, there is still a phantom instruction in the MEM stage.
+
         if self.stall_timer == 0 {
             if check_raw_hazard(id_instr, ex_instr) {
                 // Must stall for 2 cycles
-                self.stall_timer = 2;
+                self.stall_timer = 3;
             } else if check_raw_hazard(id_instr, mem_instr) {
                 // Only stall for a single cycle
-                self.stall_timer = 1
+                self.stall_timer = 2
+            }
+        } else if self.stall_timer == 1 {
+            if check_raw_hazard(id_instr, ex_instr) {
+                // Must stall for 2 cycles
+                self.stall_timer = 3;
+            } else {
+                self.stall_timer = self.stall_timer - 1;
             }
         } else {
             self.stall_timer = self.stall_timer - 1;
         }
 
-        let not_stall = !(self.stall_timer >= 1);
-
+        let not_stall = !(self.stall_timer >= 2);
         port_collection.set_port_data(self.out_not_stall, not_stall.into());
     }
 }
@@ -2066,7 +2105,7 @@ Processor -- IF Stage
 
 pub struct IFStage {
     /// Program counter register
-    pub reg_pc: Register,
+    pub reg_pc: GuardedRegister,
 
     /// Adder for PC increase
     pub addr: Adder,
@@ -2084,10 +2123,10 @@ pub struct IFStage {
     pub reg_c_len_mode: ConstantRegister,
 
     /// NPC register storing next program counter
-    pub reg_npc: Register,
+    pub reg_npc: GuardedRegister,
 
     /// IR register for storing fetched instruction
-    pub reg_ir: Register
+    pub reg_ir: GuardedRegister
 }
 
 impl IFStage {
@@ -2096,17 +2135,17 @@ impl IFStage {
         let reg_c_4 = ConstantRegister::new(port_collection.clone(), 4, String::from("if_reg_c_4"));
         let reg_c_len_mode = ConstantRegister::new(port_collection.clone(), MEM_LEN_WORD, String::from("if_reg_c_len_mode"));
 
-        // Program counter register
-        let mut reg_pc = Register::new(port_collection.clone(), PORT_NULL_ID, String::from("if_reg_pc"));
+        // Program counter register (still need connection to interlock unit and branch feedback)
+        let mut reg_pc = GuardedRegister::new(port_collection.clone(), PORT_NULL_ID, PORT_NULL_ID, String::from("if_reg_pc"));
 
         // Adder, mux, and instruction memory (connecting second mux input requires EX stage)
         let addr = Adder::new(port_collection.clone(), reg_c_4.output_port, reg_pc.output_port, String::from("if_addr"));
         let mux = Mux::<2>::new(port_collection.clone(), &[addr.output_port, PORT_NULL_ID], PORT_NULL_ID, String::from("if_mux"));
         let imem = RMemory::new(port_collection.clone(), reg_pc.output_port, reg_c_len_mode.output_port, String::from("if_imem"));
 
-        // Pipeline registers: IR and NPC
-        let reg_npc = Register::new(port_collection.clone(), mux.output_port, String::from("if_npc"));
-        let reg_ir = Register::new(port_collection.clone(), imem.output_port, String::from("if_ir"));
+        // Pipeline registers: IR and NPC (still need connection to interlock unit)
+        let reg_npc = GuardedRegister::new(port_collection.clone(), mux.output_port, PORT_NULL_ID, String::from("if_npc"));
+        let reg_ir = GuardedRegister::new(port_collection.clone(), imem.output_port, PORT_NULL_ID, String::from("if_ir"));
 
         // Set PC input to the MUX output
         reg_pc.input = mux.output_port;
@@ -2121,6 +2160,13 @@ impl IFStage {
             reg_npc,
             reg_ir
         }
+    }
+
+    /// Makes necessary connections for interlock unit.
+    pub fn connect_interlock_unit(&mut self, iu_out: PortID) {
+        self.reg_pc.input_enable = iu_out;
+        self.reg_ir.input_enable = iu_out;
+        self.reg_npc.input_enable = iu_out;
     }
 }
 
@@ -2182,34 +2228,34 @@ pub struct IDStage {
     */
 
     /// IR register for storing current instruction
-    pub reg_ir: Register,
+    pub reg_ir: GuardedRegister,
 
     /// Next program counter
-    pub reg_npc: Register,
+    pub reg_npc: GuardedRegister,
 
     /// Destination register number
-    pub reg_rd: Register,
+    pub reg_rd: GuardedRegister,
 
     /// Source 1 register number
-    pub reg_ra: Register,
+    pub reg_ra: GuardedRegister,
 
     /// Source 2 register number
-    pub reg_rb: Register,
+    pub reg_rb: GuardedRegister,
 
     /// I-type immediate
-    pub reg_imm_i: Register,
+    pub reg_imm_i: GuardedRegister,
 
     /// S-type immediate
-    pub reg_imm_s: Register,
+    pub reg_imm_s: GuardedRegister,
 
     /// B-type immediate
-    pub reg_imm_b: Register,
+    pub reg_imm_b: GuardedRegister,
 
     /// U-type immediate
-    pub reg_imm_u: Register,
+    pub reg_imm_u: GuardedRegister,
 
     /// J-type immediate
-    pub reg_imm_j: Register,
+    pub reg_imm_j: GuardedRegister,
 }
 
 impl IDStage {
@@ -2239,20 +2285,20 @@ impl IDStage {
         rf.mux_out_a.inputs[0] = reg_c_x0.output_port;
         rf.mux_out_b.inputs[0] = reg_c_x0.output_port;
 
-        // Pipeline registers
-        let reg_npc = Register::new(port_collection.clone(), if_stage.reg_npc.output_port, String::from("id_reg_npc"));
+        // Pipeline registers (still need connection to interlock unit)
+        let reg_npc = GuardedRegister::new(port_collection.clone(), if_stage.reg_npc.output_port, PORT_NULL_ID, String::from("id_reg_npc"));
 
-        let reg_ra = Register::new(port_collection.clone(), rf.out_a, String::from("id_reg_ra"));
-        let reg_rb = Register::new(port_collection.clone(), rf.out_b, String::from("id_reg_rb"));
+        let reg_ra = GuardedRegister::new(port_collection.clone(), rf.out_a, PORT_NULL_ID, String::from("id_reg_ra"));
+        let reg_rb = GuardedRegister::new(port_collection.clone(), rf.out_b, PORT_NULL_ID, String::from("id_reg_rb"));
 
-        let reg_imm_i = Register::new(port_collection.clone(), sign_extend.out_i_type, String::from("id_reg_imm_i"));
-        let reg_imm_s = Register::new(port_collection.clone(), sign_extend.out_s_type, String::from("id_reg_imm_s"));
-        let reg_imm_b = Register::new(port_collection.clone(), sign_extend.out_b_type, String::from("id_reg_imm_b"));
-        let reg_imm_u = Register::new(port_collection.clone(), sign_extend.out_u_type, String::from("id_reg_imm_u"));
-        let reg_imm_j = Register::new(port_collection.clone(), sign_extend.out_j_type, String::from("id_reg_imm_j"));
+        let reg_imm_i = GuardedRegister::new(port_collection.clone(), sign_extend.out_i_type, PORT_NULL_ID, String::from("id_reg_imm_i"));
+        let reg_imm_s = GuardedRegister::new(port_collection.clone(), sign_extend.out_s_type, PORT_NULL_ID, String::from("id_reg_imm_s"));
+        let reg_imm_b = GuardedRegister::new(port_collection.clone(), sign_extend.out_b_type, PORT_NULL_ID, String::from("id_reg_imm_b"));
+        let reg_imm_u = GuardedRegister::new(port_collection.clone(), sign_extend.out_u_type, PORT_NULL_ID, String::from("id_reg_imm_u"));
+        let reg_imm_j = GuardedRegister::new(port_collection.clone(), sign_extend.out_j_type, PORT_NULL_ID, String::from("id_reg_imm_j"));
 
-        let reg_rd = Register::new(port_collection.clone(), reg_shift_rd.output_port, String::from("id_reg_rd"));
-        let reg_ir = Register::new(port_collection.clone(), if_stage.reg_ir.output_port, String::from("id_ir"));
+        let reg_rd = GuardedRegister::new(port_collection.clone(), reg_shift_rd.output_port, PORT_NULL_ID, String::from("id_reg_rd"));
+        let reg_ir = GuardedRegister::new(port_collection.clone(), if_stage.reg_ir.output_port, PORT_NULL_ID, String::from("id_ir"));
 
         Self {
             reg_shift_rd,
@@ -2272,6 +2318,20 @@ impl IDStage {
             reg_imm_u,
             reg_imm_j
         }
+    }
+
+    /// Makes necessary connections for interlock unit.
+    pub fn connect_interlock_unit(&mut self, iu_out: PortID) {
+        self.reg_ir.input_enable = iu_out;
+        self.reg_npc.input_enable = iu_out;
+        self.reg_rd.input_enable = iu_out;
+        self.reg_ra.input_enable = iu_out;
+        self.reg_rb.input_enable = iu_out;
+        self.reg_imm_i.input_enable = iu_out;
+        self.reg_imm_s.input_enable = iu_out;
+        self.reg_imm_b.input_enable = iu_out;
+        self.reg_imm_u.input_enable = iu_out;
+        self.reg_imm_j.input_enable = iu_out;
     }
 }
 
@@ -2600,7 +2660,10 @@ impl EXStage {
                 (0, 0, 0, 0, 0, 0, 0)
             }
             op_code::BRANCH => {
-                (0, 0, 0, 0, 0, 0, 0)
+                let funct_3 = extract_funct_3(instruction);
+                let comp_mode = funct_3 >> 2;
+                let condition = funct_3 & 0b_011;
+                (Self::MUX_IMM_B_TYPE, Self::MUX_RA_NPC, Self::MUX_RB_IMM, ALU::OP_ADD, comp_mode, condition, Self::MUX_BT_BRANCH)
             }
             op_code::LUI => {
                 (0, 0, 0, 0, 0, 0, 0)
@@ -2873,7 +2936,7 @@ impl WBStage {
                 todo!()
             }
             op_code::BRANCH => {
-                todo!()
+                (Self::MUX_VALUE_ALU, 0)
             }
             op_code::LUI => {
                 todo!()
@@ -2921,6 +2984,8 @@ pub struct Processor {
     pub ex_stage: EXStage,
     pub mem_stage: MEMStage,
     pub wb_stage: WBStage,
+
+    pub interlock_unit: InterlockUnit
 }
 
 impl Processor {
@@ -2933,18 +2998,28 @@ impl Processor {
         let mem_stage = MEMStage::new(port_collection.clone(), &ex_stage);
         let wb_stage = WBStage::new(port_collection.clone(), &mem_stage);
 
-        // Make final loopback connections
+        let interlock_unit = InterlockUnit::new(
+            port_collection.clone(),
+            if_stage.reg_ir.output_port,
+            id_stage.reg_ir.output_port,
+            ex_stage.reg_ir.output_port,
+            String::from("IU")
+        );
 
-        // Branch
+        // Connect Branch
         if_stage.mux.inputs[1] = ex_stage.reg_alu.output_port;
         if_stage.mux.selection_input = ex_stage.reg_bt.output_port;
 
-        // Write back
+        // Connect Write back
         id_stage.rf.set_write_inputs(
             wb_stage.mux_value.output_port,
             wb_stage.reg_rd.output_port,
             wb_stage.ctrl_reg_write_enable.output_port
         );
+
+        // Connect interlock_unit
+        if_stage.connect_interlock_unit(interlock_unit.out_not_stall);
+        id_stage.connect_interlock_unit(interlock_unit.out_not_stall);
 
         // Initialize instruction registers with NOP
         port_collection.borrow_mut().set_port_data(if_stage.reg_ir.output_port, NOP);
@@ -2959,13 +3034,18 @@ impl Processor {
             id_stage,
             ex_stage,
             mem_stage,
-            wb_stage
+            wb_stage,
+            interlock_unit
         }
     }
 }
 
 impl Component for Processor {
     fn process_cycle(&mut self) {
+        // Check if processor must stall
+        self.interlock_unit.process_cycle();
+
+        // Update stages
         self.wb_stage.process_cycle();
         self.mem_stage.process_cycle();
         self.ex_stage.process_cycle();
@@ -2994,98 +3074,86 @@ pub fn test_processor() {
     //     "
     // ).expect("Error compiling program");
 
+    // let program = assembler::assemble_program(
+    //     "\
+    //     MVI x1 30;\
+    //     MVI x2 80;\
+    //     ADD x1 x1 x2;\
+    //     MVI x3 200;\
+    //     STORE x1 x0 0;\
+    //     LOAD x10 x0 0;\
+    //     ADD x1 x10 x3;\
+    //     "
+    // ).expect("Error compiling program");
+
+    /*
+    i = 1;
+    while i <= 32
+        i *= 2
+     */
     let program = assembler::assemble_program(
         "\
-        MVI x1 30;\
-        MVI x2 80;\
+        MVI x1 1;\
+        MVI x2 2;\
+        MVI x3 32;\
+        MUL x1 x1 x2;\
+        BLEU x1 x3 -2;\
         NOP;\
         NOP;\
-        ADD x1 x1 x2;\
-        NOP;\
-        MVI x3 200;\
-        STORE x1 x0 0;\
-        LOAD x10 x0 0;\
-        NOP;\
-        NOP;\
-        ADD x1 x10 x3;\
+        MVI x31 88;\
         "
     ).expect("Error compiling program");
 
     processor.if_stage.imem.content = assembler::program_to_mem::<MEM_SIZE>(&program);
 
-    for i in 0..16 {
+    let mut num_stalled_cycles = 0;
+    let cycle_timeout = 500;
+
+    for i in 1..cycle_timeout {
         processor.process_cycle();
 
-        println!("----------- Cycle {} -----------", i);
-        println!("if_stage: {}", processor.port_collection.borrow().get_port_data(processor.if_stage.reg_ir.output_port));
-        println!("id_stage: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.reg_ir.output_port));
-        println!("ex_stage: {}", processor.port_collection.borrow().get_port_data(processor.ex_stage.reg_ir.output_port));
-        println!("mem_stage: {}", processor.port_collection.borrow().get_port_data(processor.mem_stage.reg_ir.output_port));
-        println!("wb_stage: {}", processor.port_collection.borrow().get_port_data(processor.wb_stage.reg_ir.output_port));
+        let ports = processor.port_collection.borrow();
 
-        println!();
+        let stalled = ports.get_port_data(processor.interlock_unit.out_not_stall) == 0;
+        if stalled {
+            num_stalled_cycles += 1;
+        }
+
+        let reg_31_val = ports.get_port_data(processor.id_stage.rf.registers[31].output_port);
+        if reg_31_val == 88 {
+            println!("------- COMPLETED -------");
+            println!("Total cycles:         {}", i);
+            println!("Total cycles stalled: {}", num_stalled_cycles);
+            println!();
+            println!("Registers:");
+            println!("reg_1: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[1].output_port));
+            println!();
+
+            return;
+        }
+
+        // println!("----------- Cycle {} -----------", i);
+        // println!("id_stage: {}", processor.port_collection.borrow().get_port_data(processor.if_stage.reg_ir.output_port));
+        // println!("ex_stage: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.reg_ir.output_port));
+        // println!("mem_stage: {}", processor.port_collection.borrow().get_port_data(processor.ex_stage.reg_ir.output_port));
+        // println!("wb_stage: {}", processor.port_collection.borrow().get_port_data(processor.mem_stage.reg_ir.output_port));
+        // println!();
+
+        // println!("flags:");
+        // println!("stalled: {}", processor.port_collection.borrow().get_port_data(processor.interlock_unit.out_not_stall) == 0);
+        // println!();
+        //
         println!("Registers:");
         println!("reg_1: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[1].output_port));
         println!("reg_10: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[10].output_port));
         println!();
     }
-}
 
-#[test]
-fn tmp() {
-    const WRITE: Word = 2;
-    const READ: Word = 1;
-    const OTHER: Word = 0;
-
-    let mut count = 0;
-    let mut not_stall: bool = false;
-
-    fn has_hazard(rd_instr: Word, wr_instr: Word) -> bool {
-        rd_instr == READ && wr_instr == WRITE
-    }
-
-    let mut if_stage = OTHER;
-    let mut id_stage = OTHER;
-    let mut ex_stage = OTHER;
-    let mut mem_stage = OTHER;
-    let mut wb_stage = OTHER;
-
-    let mut pc = 0;
-    let program = vec![
-        WRITE,
-        READ,
-        READ
-    ];
-
-    println!("{} \t {} \t {} \t {} \t {} \t\t {} \t {}", "IF", "ID", "EX", "MEM", "WB", "S", "C");
-
-    for _ in 0..10 {
-        wb_stage = mem_stage;
-        mem_stage = ex_stage;
-        ex_stage = if not_stall { id_stage } else { ex_stage };
-        id_stage = if not_stall { if_stage } else { id_stage };
-
-        pc = if not_stall { pc + 1 } else { pc };
-        if_stage = *program.get(pc).unwrap_or((&OTHER));
-
-        if count == 0 {
-            if has_hazard(id_stage, ex_stage) {
-                count = 3;
-            } else if has_hazard(id_stage, mem_stage) {
-                count = 2
-            }
-        } else if count == 1 {
-            if has_hazard(id_stage, ex_stage) {
-                count = 3;
-            } else {
-                count = count - 1
-            }
-        } else {
-            count = count - 1;
-        }
-
-        not_stall = !(count >= 2);
-
-        println!("{} \t {} \t {} \t {} \t {} \t\t {} \t {}", if_stage, id_stage, ex_stage, mem_stage, wb_stage, not_stall, count);
-    }
+    println!("------- TIMED OUT -------");
+    println!("Total cycles stalled: {}", num_stalled_cycles);
+    println!();
+    println!("Registers:");
+    println!("reg_1: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[1].output_port));
+    println!("reg_10: {}", processor.port_collection.borrow().get_port_data(processor.id_stage.rf.registers[10].output_port));
+    println!();
 }
