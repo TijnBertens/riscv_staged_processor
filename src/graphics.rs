@@ -168,89 +168,382 @@ pub fn run_gui() {
 
 mod component_graphics {
     use eframe::egui;
-    use crate::components::{ConstantRegister, Register};
-    use eframe::egui::{Pos2, Painter, Vec2, Color32, FontId, Align2};
+    use crate::components::{ConstantRegister, Mux, Register, RegisterFile, RMemory};
+    use eframe::egui::{Pos2, Painter, Vec2, Color32, FontId, Align2, Shape, Stroke};
     use eframe::epaint::{RectShape, PathShape};
+
+    /*
+    Colors theme (https://coolors.co/palette/264653-2a9d8f-e9c46a-f4a261-e76f51)
+     */
 
     pub const COL_DARK_BLUE: Color32 = Color32::from_rgb(38, 70, 83);
     pub const COL_LIGHT_BLUE: Color32 = Color32::from_rgb(42, 157, 143);
     pub const COL_SAND: Color32 = Color32::from_rgb(233, 196, 106);
     pub const COL_LIGHT_ORANGE: Color32 = Color32::from_rgb(244, 162, 97);
     pub const COL_DARK_ORANGE: Color32 = Color32::from_rgb(231, 111, 81);
+    pub const COL_GREEN: Color32 = Color32::from_rgb(183, 232, 104);
 
-    pub fn draw_constant_register(painter: &mut Painter, reg: &ConstantRegister, center: Pos2) {
-        let width = 60.0;
-        let height = 45.0;
+    /*
+    Constants
+     */
 
-        let rect = egui::Rect::from_center_size(center, Vec2::new(width, height));
+    const PORT_SIZE: Vec2 = Vec2::new(8.0, 8.0);
+    const PORT_ROUNDING: f32 = 1.0;
 
-        let rect_shape = egui::Shape::Rect(RectShape::filled(
-            rect,
-            egui::Rounding::same(5.0),
-            COL_SAND
+    /*
+    Graphics for ConstantRegister
+     */
+
+    pub struct ConstantRegisterGraphic<'a> {
+        reg: &'a ConstantRegister,
+        position: Pos2,
+        pub out_port_pos: Pos2,
+    }
+
+    impl<'a> ConstantRegisterGraphic<'a> {
+        const BG_WIDTH: f32 = 60.0;
+        const BG_HEIGHT: f32 = 45.0;
+        const BG_ROUNDING: f32 = 5.0;
+
+        pub fn new(reg: &'a ConstantRegister, position: Pos2) -> Self {
+            Self {
+                reg,
+                position,
+                out_port_pos: position + Vec2::new(Self::BG_WIDTH / 2.0, 0.0)
+            }
+        }
+
+        pub fn draw(&self, painter: &mut Painter) {
+            // Draw background
+            let background = egui::Shape::Rect(RectShape::filled(
+                egui::Rect::from_center_size(self.position, Vec2::new(Self::BG_WIDTH, Self::BG_HEIGHT)),
+                egui::Rounding::same(Self::BG_ROUNDING),
+                COL_SAND
+            ));
+
+            painter.add(background);
+
+            // Draw output port
+            draw_port(painter, self.out_port_pos, COL_DARK_ORANGE);
+
+            // Draw text
+            let pos_name = self.position - Vec2::new(0.0, 8.0);
+            let pos_val = self.position + Vec2::new(0.0, 8.0);
+
+            draw_text_basic(painter, &self.reg.name, pos_name, 13.0);
+
+            let value = self.reg.port_collection.borrow().get_port_data(self.reg.output_port);
+            draw_text_basic(painter, value, pos_val, 13.0);
+        }
+    }
+
+    /*
+    Graphics for Register
+     */
+
+    pub struct RegisterGraphic<'a> {
+        reg: &'a Register,
+        position: Pos2,
+        pub in_port_pos: Pos2,
+        pub out_port_pos: Pos2,
+    }
+
+    impl<'a> RegisterGraphic<'a> {
+        const BG_WIDTH: f32 = 60.0;
+        const BG_HEIGHT: f32 = 45.0;
+        const BG_ROUNDING: f32 = 5.0;
+
+        pub fn new(reg: &'a Register, position: Pos2) -> Self {
+            Self {
+                reg,
+                position,
+                in_port_pos: position - Vec2::new(Self::BG_WIDTH / 2.0, 0.0),
+                out_port_pos: position + Vec2::new(Self::BG_WIDTH / 2.0, 0.0)
+            }
+        }
+
+        pub fn draw(&self, painter: &mut Painter) {
+            // Draw background
+            let background = egui::Shape::Rect(RectShape::filled(
+                egui::Rect::from_center_size(self.position, Vec2::new(Self::BG_WIDTH, Self::BG_HEIGHT)),
+                egui::Rounding::same(Self::BG_ROUNDING),
+                COL_SAND
+            ));
+
+            painter.add(background);
+
+            // Draw ports
+            draw_port(painter, self.in_port_pos, COL_GREEN);
+            draw_port(painter, self.out_port_pos, COL_DARK_ORANGE);
+
+            // Draw text
+            let pos_name = self.position - Vec2::new(0.0, 8.0);
+            let pos_val = self.position + Vec2::new(0.0, 8.0);
+
+            draw_text_basic(painter, &self.reg.name, pos_name, 13.0);
+
+            let value = self.reg.port_collection.borrow().get_port_data(self.reg.output_port);
+            draw_text_basic(painter, value, pos_val, 13.0);
+        }
+    }
+
+    /*
+    Graphics for Mux
+     */
+
+    pub struct MuxGraphic<'a, const NUM_INPUTS: usize> {
+        mux: &'a Mux<NUM_INPUTS>,
+        position: Pos2,
+
+        pub in_port_positions: [Pos2; NUM_INPUTS],
+        pub select_port_pos: Pos2,
+        pub out_port_pos: Pos2,
+    }
+
+    impl<'a, const NUM_INPUTS: usize> MuxGraphic<'a, NUM_INPUTS> {
+        const BG_WIDTH: f32 = 40.0;
+        const BG_HEIGHT_OUT: f32 = 45.0;
+        const BG_HEIGHT_IN: f32 = 75.0;
+        const BG_ROUNDING: f32 = 5.0;
+
+        pub fn new(mux: &'a Mux<NUM_INPUTS>, position: Pos2) -> Self {
+            let mut in_port_positions = [Pos2::ZERO; NUM_INPUTS];
+            let in_port_x =  position.x - (Self::BG_WIDTH / 2.0);
+
+            let height_per_segment = Self::BG_HEIGHT_IN / (NUM_INPUTS + 1) as f32;
+
+            for i in 0..NUM_INPUTS {
+                let y = (i + 1)  as f32 * height_per_segment + (position.y - (Self::BG_HEIGHT_IN / 2.0));
+                in_port_positions[i] = Pos2::new(in_port_x, y);
+            }
+
+            let bot_left = position + 0.5 * Vec2::new(-Self::BG_WIDTH, Self::BG_HEIGHT_IN);
+            let bot_right = position + 0.5 * Vec2::new(Self::BG_WIDTH, Self::BG_HEIGHT_OUT);
+            let select_port_pos = bot_left + 0.5 * (bot_right - bot_left);
+
+            Self {
+                mux,
+                position,
+                in_port_positions,
+                select_port_pos,
+                out_port_pos: position + Vec2::new(Self::BG_WIDTH / 2.0, 0.0)
+            }
+        }
+
+        pub fn draw(&self, painter: &mut Painter) {
+            // Draw background
+            let top_left = self.position + 0.5 * Vec2::new(-Self::BG_WIDTH, Self::BG_HEIGHT_IN);
+            let bot_left = self.position + 0.5 * Vec2::new(-Self::BG_WIDTH, -Self::BG_HEIGHT_IN);
+            let top_right = self.position + 0.5 * Vec2::new(Self::BG_WIDTH, Self::BG_HEIGHT_OUT);
+            let bot_right = self.position + 0.5 * Vec2::new(Self::BG_WIDTH, -Self::BG_HEIGHT_OUT);
+
+            let background = Shape::Path(PathShape::convex_polygon(
+                vec![top_left, top_right, bot_right, bot_left],
+                COL_SAND,
+                Stroke::new(
+                    5.0,
+                    COL_SAND
+                )
+            ));
+
+            painter.add(background);
+
+            // Draw inner connection
+            let selection_idx = self.mux.port_collection.borrow().get_port_data(self.mux.selection_input);
+
+            let inner_connection = Shape::LineSegment {
+                points: [self.in_port_positions[selection_idx as usize], self.out_port_pos],
+                stroke: Stroke::new(3.0, COL_LIGHT_BLUE)
+            };
+
+            painter.add(inner_connection);
+
+            // Draw ports
+            draw_port(painter, self.out_port_pos, COL_DARK_ORANGE);
+            draw_port(painter, self.select_port_pos, COL_GREEN);
+
+            for i in 0..NUM_INPUTS {
+                draw_port(painter, self.in_port_positions[i], COL_GREEN);
+            }
+        }
+    }
+
+    /*
+    Graphics for Mux
+    */
+
+    pub struct RMemoryGraphic<'a> {
+        mem: &'a RMemory,
+        position: Pos2,
+
+        pub in_address_pos: Pos2,
+        pub in_length_pos: Pos2,
+        pub out_port_pos: Pos2
+    }
+
+    impl<'a> RMemoryGraphic<'a> {
+        const BG_WIDTH: f32 = 60.0;
+        const BG_HEIGHT: f32 = 120.0;
+        const BG_ROUNDING: f32 = 5.0;
+
+        pub fn new(mem: &'a RMemory, position: Pos2) -> Self {
+            Self {
+                mem,
+                position,
+                in_address_pos: position + Vec2::new(-Self::BG_WIDTH / 2.0, -Self::BG_HEIGHT / 4.0),
+                in_length_pos: position + Vec2::new(-Self::BG_WIDTH / 2.0, Self::BG_HEIGHT / 4.0),
+                out_port_pos: position + Vec2::new(Self::BG_WIDTH / 2.0, -Self::BG_HEIGHT / 4.0)
+            }
+        }
+
+        pub fn draw(&self, painter: &mut Painter) {
+            // Draw background
+            let background = Shape::Rect(RectShape::filled(
+                egui::Rect::from_center_size(self.position, Vec2::new(Self::BG_WIDTH, Self::BG_HEIGHT)),
+                egui::Rounding::same(Self::BG_ROUNDING),
+                COL_SAND
+            ));
+
+            painter.add(background);
+
+            // Draw ports
+            draw_port(painter, self.in_address_pos, COL_GREEN);
+            draw_port(painter, self.in_length_pos, COL_GREEN);
+            draw_port(painter, self.out_port_pos, COL_DARK_ORANGE);
+
+            // Draw name
+            let pos_name = self.position;
+            draw_text_basic(painter, &self.mem.name, pos_name, 15.0);
+        }
+    }
+
+    /*
+    Graphics for RegisterFile
+    */
+
+    pub struct RegisterFileGraphic<'a, const NUM_REGISTERS: usize> {
+        rf: &'a RegisterFile<NUM_REGISTERS>,
+        position: Pos2,
+
+        pub in_read_a_pos: Pos2,
+        pub in_read_b_pos: Pos2,
+
+        pub in_write_data_pos: Pos2,
+        pub in_write_select_pos: Pos2,
+        pub in_write_enable_pos: Pos2,
+
+        pub out_a_pos: Pos2,
+        pub out_b_pos: Pos2,
+    }
+
+    impl<'a, const NUM_REGISTERS: usize> RegisterFileGraphic<'a, NUM_REGISTERS> {
+        const BG_WIDTH: f32 = 60.0;
+        const BG_HEIGHT: f32 = 109.0;
+        const BG_ROUNDING: f32 = 5.0;
+
+        pub fn new(rf: &'a RegisterFile<NUM_REGISTERS>, position: Pos2) -> Self {
+            let half_width = Self::BG_WIDTH / 2.0;
+            let half_height = Self::BG_HEIGHT / 2.0;
+
+            let left_edge = position.x - half_width;
+            let right_edge = position.x + half_width;
+
+            let read_a_height = position.y - (0.70 * half_height);
+            let read_b_height = position.y - (0.30 * half_height);
+
+            let write_data_height = position.y + (0.30 * half_height);
+            let write_select_height = position.y + (0.70 * half_height);
+            let write_enable_height = position.y + (1.0 * half_height);
+
+            Self {
+                rf,
+                position,
+                in_read_a_pos: Pos2::new(left_edge, read_a_height),
+                in_read_b_pos: Pos2::new(left_edge, read_b_height),
+                in_write_data_pos: Pos2::new(left_edge, write_data_height),
+                in_write_select_pos: Pos2::new(left_edge, write_select_height),
+                in_write_enable_pos: Pos2::new(position.x, write_enable_height),
+                out_a_pos: Pos2::new(right_edge, read_a_height),
+                out_b_pos: Pos2::new(right_edge, read_a_height)
+            }
+        }
+
+        pub fn draw(&self, painter: &mut Painter) {
+            // Draw background
+            let background = Shape::Rect(RectShape::filled(
+                egui::Rect::from_center_size(self.position, Vec2::new(Self::BG_WIDTH, Self::BG_HEIGHT)),
+                egui::Rounding::same(Self::BG_ROUNDING),
+                COL_SAND
+            ));
+
+            painter.add(background);
+
+            // Draw ports
+            draw_port(painter, self.in_read_a_pos, COL_GREEN);
+            draw_port(painter, self.in_read_b_pos, COL_GREEN);
+            draw_port(painter, self.in_write_data_pos, COL_GREEN);
+            draw_port(painter, self.in_write_select_pos, COL_GREEN);
+            draw_port(painter, self.in_write_enable_pos, COL_GREEN);
+
+            draw_port(painter, self.out_a_pos, COL_DARK_ORANGE);
+            draw_port(painter, self.out_b_pos, COL_DARK_ORANGE);
+
+            // Draw name
+            let pos_name = self.position;
+            draw_text_basic(painter, "RF", pos_name, 15.0);
+        }
+    }
+
+    /// Draws the graphic for a port at a given position using a given color.
+    pub fn draw_port(painter: &mut Painter, pos: Pos2, col: Color32) {
+        let port = Shape::Rect(RectShape::filled(
+            egui::Rect::from_center_size(pos, PORT_SIZE),
+            egui::Rounding::same(PORT_ROUNDING),
+            col
         ));
 
-        painter.add(rect_shape);
+        painter.add(port);
+    }
 
-        let pos_output_port = center + Vec2::new(width / 2.0, 0.0);
-
-        let rect = egui::Rect::from_center_size(pos_output_port, Vec2::new(8.0, 8.0));
-
-        let rect_shape = egui::Shape::Rect(RectShape::filled(
-            rect,
-            egui::Rounding::same(1.0),
-            COL_DARK_ORANGE
-        ));
-
-        painter.add(rect_shape);
-
-        let pos_name = center - Vec2::new(0.0, 8.0);
-        let pos_val = center + Vec2::new(0.0, 8.0);
-
+    /// Draws a string of black monospace text aligned CENTER-CENTER style.
+    pub fn draw_text_basic(painter: &mut Painter, text: impl ToString, pos: Pos2, size: f32) {
         painter.text(
-            pos_name,
+            pos,
             Align2::CENTER_CENTER,
-            &reg.name,
-            FontId::monospace(13.0),
-            Color32::BLACK
-        );
-
-        let value = reg.port_collection.borrow().get_port_data(reg.output_port);
-        painter.text(
-            pos_val,
-            Align2::CENTER_CENTER,
-            value.to_string(),
-            FontId::monospace(13.0),
+            text,
+            FontId::monospace(size),
             Color32::BLACK
         );
     }
 
-    pub fn draw_register(painter: &mut Painter, reg: &Register, center: Pos2) {
-        let width = 40.0;
-        let height = 30.0;
+    pub fn draw_connection_simple(painter: &mut Painter, start: Pos2, end: Pos2, jump_pos: Option<f32>) {
+        let path = if start.y == end.y {
+            // Go in a straight line
+            vec![start, end]
+        } else {
+            // A jump is necessary
+            let d = end.to_vec2() - start.to_vec2();
 
-        let rect = egui::Shape::Rect(RectShape::filled(
-            egui::Rect::from_center_size(center, Vec2::new(width, height)),
-            egui::Rounding::none(),
-            Color32::GRAY
+            let jump_pos = jump_pos.unwrap_or(0.5).clamp(0.0, 1.0);
+
+            let jump_first = start + Vec2::new(jump_pos * d.x, 0.0);
+            let jump_second = jump_first + Vec2::new(0.0, d.y);
+
+            vec![start, jump_first, jump_second, end]
+        };
+
+        let path = Shape::Path(PathShape::line(
+            path,
+            Stroke::new(3.0, COL_LIGHT_BLUE)
         ));
 
-        painter.add(rect);
-
-        let value = reg.port_collection.borrow().get_port_data(reg.output_port);
-        painter.text(
-            center,
-            Align2::CENTER_CENTER,
-            value.to_string(),
-            FontId::monospace(20.0),
-            Color32::WHITE
-        );
+        painter.add(path);
     }
 
     pub fn draw_connection(painter: &mut Painter, path: &[Pos2]) {
         let path = egui::Shape::Path(PathShape::line(
             path.into(),
-            egui::Stroke::new(3.0, Color32::LIGHT_RED)
+            egui::Stroke::new(3.0, COL_LIGHT_BLUE)
         ));
 
         painter.add(path);
@@ -260,8 +553,8 @@ mod component_graphics {
 mod tests {
     use super::*;
     use super::component_graphics::*;
-    use crate::components::{ConstantRegister, Component, Register};
-    use crate::circuit::PortCollection;
+    use crate::components::{ConstantRegister, Component, Register, Mux, RMemory, RegisterFile};
+    use crate::circuit::{PORT_NULL_ID, PortCollection};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -306,24 +599,53 @@ mod tests {
         struct TestData {
             reg_c: ConstantRegister,
             reg_a: Register,
+            reg_s: ConstantRegister,
+            mux: Mux<2>,
+            imem: RMemory,
+            rf: RegisterFile<32>
         }
 
         let port_collection = Rc::new(RefCell::new(PortCollection::new()));
 
         let reg_c = ConstantRegister::new(port_collection.clone(), 3, String::from("reg_c"));
         let reg_a = Register::new(port_collection.clone(), reg_c.output_port, String::from("reg_a"));
+        let reg_s = ConstantRegister::new(port_collection.clone(), 1, String::from("reg_s"));
+
+        let mux = Mux::<2>::new(port_collection.clone(), &[reg_c.output_port, reg_a.output_port], reg_s.output_port, String::from("mux"));
+        let imem = RMemory::new(port_collection.clone(), mux.output_port, PORT_NULL_ID, String::from("imem"));
+        let rf = RegisterFile::<32>::new(
+            port_collection.clone(),
+            PORT_NULL_ID,
+            PORT_NULL_ID,
+            PORT_NULL_ID,
+            PORT_NULL_ID,
+            PORT_NULL_ID,
+        );
 
         let data = TestData {
             reg_c,
-            reg_a
+            reg_a,
+            reg_s,
+            mux,
+            imem,
+            rf
         };
 
         TestGUI::create_and_run(data, |data, ui| {
             ui.vertical(|ui| {
                 ui.add(egui::Slider::new(&mut data.reg_c.constant_value, 0..=999));
                 if ui.button("Process Cycle").clicked() {
-                    data.reg_c.process_cycle();
                     data.reg_a.process_cycle();
+                    data.reg_s.process_cycle();
+                    data.reg_c.process_cycle();
+                    data.mux.process_cycle();
+                    data.imem.process_cycle();
+                    data.rf.process_cycle();
+                }
+
+                if ui.button("Switch Mux").clicked() {
+                    data.reg_s.constant_value ^= 1;
+                    data.reg_s.process_cycle();
                 }
             });
 
@@ -337,15 +659,64 @@ mod tests {
                 );
 
                 let center = to_screen.transform_pos((100.0, 100.0).into());
-                draw_constant_register(&mut painter, &data.reg_c, center);
+                let reg_c_graphic = ConstantRegisterGraphic::new(&data.reg_c, center);
 
                 let center = to_screen.transform_pos((200.0, 100.0).into());
-                draw_register(&mut painter, &data.reg_a, center);
+                let reg_a_graphic = RegisterGraphic::new(&data.reg_a, center);
 
-                draw_connection(&mut painter, &[
-                   center - Vec2::new(70.0, 0.0),
-                    center - Vec2::new(30.0, 0.0),
-                ]);
+                let center = to_screen.transform_pos((100.0, 250.0).into());
+                let reg_s_graphic = ConstantRegisterGraphic::new(&data.reg_s, center);
+
+                let center = to_screen.transform_pos((350.0, 150.0).into());
+                let mux_graphic = MuxGraphic::new(&data.mux, center);
+
+                let center = to_screen.transform_pos((450.0, 180.0).into());
+                let imem_graphic = RMemoryGraphic::new(&data.imem, center);
+
+                let center = to_screen.transform_pos((450.0, 350.0).into());
+                let rf_graphic = RegisterFileGraphic::new(&data.rf, center);
+
+                draw_connection_simple(
+                    &mut painter,
+                    reg_c_graphic.out_port_pos,
+                    reg_a_graphic.in_port_pos,
+                    None
+                );
+
+                draw_connection_simple(
+                    &mut painter,
+                    reg_a_graphic.out_port_pos,
+                    mux_graphic.in_port_positions[0],
+                    None
+                );
+
+                draw_connection_simple(
+                    &mut painter,
+                    reg_c_graphic.out_port_pos,
+                    mux_graphic.in_port_positions[1],
+                    Some(0.1)
+                );
+
+                draw_connection_simple(
+                    &mut painter,
+                    reg_s_graphic.out_port_pos,
+                    mux_graphic.select_port_pos,
+                    Some(1.0)
+                );
+
+                draw_connection_simple(
+                    &mut painter,
+                    mux_graphic.out_port_pos,
+                    imem_graphic.in_address_pos,
+                    None
+                );
+
+                reg_c_graphic.draw(&mut painter);
+                reg_a_graphic.draw(&mut painter);
+                reg_s_graphic.draw(&mut painter);
+                mux_graphic.draw(&mut painter);
+                imem_graphic.draw(&mut painter);
+                rf_graphic.draw(&mut painter);
             });
         });
     }

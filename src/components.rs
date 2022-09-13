@@ -411,7 +411,7 @@ pub struct Adder {
 }
 
 /// Simple comparator unit. A comparator takes two numerical inputs, along with a mode input that switches
-/// between signed and unsigned comparisons. Two flags are outputs: whether the inputs are equal,
+/// between signed and unsigned comparisons. Two flags are output: whether the inputs are equal,
 /// and whether the first input is strictly smaller than the other. All different branch conditions
 /// can be built out of these two simple flags.
 pub struct Comparator {
@@ -829,7 +829,7 @@ Register File
 /// (1) a data input,
 /// (2) a selection input, and
 /// (3) a write enable input.
-/// When the write enable is high, the data input is written to the register selected by the
+/// When the write enable input is high, the data input is written to the register selected by the
 /// selection input, allowing a single write per cycle.
 ///
 /// Finally, writes are performed on the first half of the cycle, while reads are performed on the
