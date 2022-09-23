@@ -1,17 +1,22 @@
 use eframe::{egui, emath};
-use eframe::egui::{Painter, Shape, Pos2, Stroke, Color32, Vec2, Rect, Sense, Frame, Align2, FontId, Context};
+use eframe::egui::{Painter, Shape, Pos2, Stroke, Color32, Vec2, Rect, Sense, Frame, Align2, FontId, Context, ScrollArea};
 use eframe::egui::epaint::PathShape;
+use crate::assembler;
 
 pub struct ProcessorGUI {
     pc: usize,
     pos: egui::Pos2,
+    code: String,
+    assembler_result: String
 }
 
 impl ProcessorGUI {
     pub fn new() -> Self {
         Self {
             pos: (50.0 , 50.0).into(),
-            pc: 0
+            pc: 0,
+            code: String::new(),
+            assembler_result: String::new()
         }
     }
 
@@ -68,87 +73,54 @@ impl ProcessorGUI {
                 });
             });
     }
-
-    fn draw_mux(&self, painter: &mut Painter, center: Pos2, ui: &mut egui::Ui) {
-
-        let width = 30.0;
-        let half_width = width / 2.0;
-
-        let in_height = 60.0;
-        let in_half_height = in_height / 2.0;
-
-        let out_height = 40.0;
-        let out_half_height = out_height / 2.0;
-
-        let top_left = Pos2::new(-half_width, in_half_height) + center.to_vec2();
-        let top_right = Pos2::new(half_width, out_half_height) + center.to_vec2();
-        let bot_right = Pos2::new(half_width, -out_half_height) + center.to_vec2();
-        let bot_left = Pos2::new(-half_width, -in_half_height) + center.to_vec2();
-
-        let shape = egui::Shape::Path(
-            PathShape::closed_line(
-                vec![top_left, top_right, bot_right, bot_left],
-                Stroke::new(3.0, Color32::WHITE)
-            )
-        );
-
-        painter.add(shape);
-    }
-
-    fn draw_thing(&mut self, ui: &mut egui::Ui) {
-        Frame::canvas(ui.style()).show(ui, |ui| {
-            let (response, mut painter) =
-                ui.allocate_painter(Vec2::new(ui.available_width(), ui.available_height()), Sense::hover());
-
-            let to_screen = emath::RectTransform::from_to(
-                Rect::from_min_size(Pos2::ZERO, response.rect.size()),
-                response.rect,
-            );
-
-            let center = to_screen.transform_pos((100.0, 100.0).into());
-            self.draw_mux(&mut painter, center, ui);
-
-            let center = to_screen.transform_pos((200.0, 300.0).into());
-            self.draw_mux(&mut painter, center, ui);
-
-            // let top_left = Pos2::new(5.0, 5.0) + self.pos.to_vec2();
-            // let top_right = Pos2::new(65.0, 5.0) + self.pos.to_vec2();
-            // let bot_left = Pos2::new(15.0, 35.0) + self.pos.to_vec2();
-            // let bot_right = Pos2::new(55.0, 35.0) + self.pos.to_vec2();
-            //
-            // let top_left = to_screen.transform_pos(top_left);
-            // let top_right = to_screen.transform_pos(top_right);
-            // let bot_left = to_screen.transform_pos(bot_left);
-            // let bot_right = to_screen.transform_pos(bot_right);
-            //
-            // let point_in_screen = to_screen.transform_pos(self.pos);
-            // let point_rect = Rect::from_center_size(point_in_screen, Vec2::new(20.0, 20.0));
-            // let point_response = ui.interact(point_rect, response.id, Sense::drag());
-            //
-            // self.pos += point_response.drag_delta();
-            //
-            // let shape = egui::Shape::Path(
-            //     PathShape::closed_line(
-            //         vec![top_left, top_right, bot_right, bot_left],
-            //         ui.style().interact(&point_response).fg_stroke
-            //     )
-            // );
-            //
-            // painter.add(shape);
-
-            response
-        });
-    }
 }
 
 impl eframe::App for ProcessorGUI {
     fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
-        egui::SidePanel::left("Program Section").show(ctx, |ui| {
-            self.build_table(ui);
+        // egui::SidePanel::left("Program Section").show(ctx, |ui| {
+        //     self.build_table(ui);
+        // });
+        //
+        // egui::CentralPanel::default().show(&ctx, |ui| {
+        //
+        // });
+
+        egui::SidePanel::right("console_panel").default_width(400.0).show(&ctx, |ui| {
+            ScrollArea::vertical()
+                .id_source("console")
+                .show(ui, |ui| {
+                    ui.add(egui::TextEdit::multiline(&mut self.code.as_str())
+                        .desired_width(f32::INFINITY)
+                    )
+                });
         });
 
         egui::CentralPanel::default().show(&ctx, |ui| {
-            self.draw_thing(ui);
+            if ui.button("assemble").clicked() {
+                assembler::Program::from_text(&self.code);
+            }
+            ScrollArea::vertical()
+                .id_source("source")
+                .show(ui, |ui| {
+                    ui.add(egui::TextEdit::multiline(&mut self.code)
+                        .desired_width(f32::INFINITY))
+                });
+            // ui.columns(2, |columns| {
+            //     ScrollArea::vertical()
+            //         .id_source("source")
+            //         .show(&mut columns[0], |ui| {
+            //             ui.add(egui::TextEdit::multiline(&mut self.code)
+            //                 .desired_width(f32::INFINITY))
+            //         });
+            //
+            //     ScrollArea::vertical()
+            //         .id_source("console")
+            //         .show(&mut columns[1], |ui| {
+            //             ui.add(egui::TextEdit::multiline(&mut self.code.as_str())
+            //                 .desired_width(f32::INFINITY)
+            //                 )
+            //         });
+            // });
         });
     }
 }

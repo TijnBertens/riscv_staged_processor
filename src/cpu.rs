@@ -968,20 +968,10 @@ mod tests {
     pub fn test_processor() {
         let mut processor = Processor::new();
 
-        let program = assembler::assemble_program(
-            "\
-        MVI x1 1;\
-        MVI x2 2;\
-        MVI x3 32;\
-        MUL x1 x1 x2;\
-        BLEU x1 x3 -2;\
-        NOP;\
-        NOP;\
-        MVI x31 88;\
-        "
-        ).expect("Error compiling program");
+        let program_text = String::from(include_str!("../test.asm"));
+        let program = assembler::Program::from_text(&program_text).expect("Failed to assemble program.");
 
-        processor.if_stage.imem.content = assembler::program_to_mem::<MEM_SIZE>(&program);
+        processor.if_stage.imem.content = program.to_mem::<MEM_SIZE>();
 
         let mut num_stalled_cycles = 0;
         let cycle_timeout = 500;

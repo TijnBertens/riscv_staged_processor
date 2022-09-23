@@ -12,4 +12,5 @@ loop:
     ADDI x1 x1 1       ; i++
     NOP
 end:
-    MV x1 x4    ; Store result in x4
+    MV x4 x1    ; Store result in x4
+    MVI x31 88  ; Exit

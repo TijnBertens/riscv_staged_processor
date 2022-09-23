@@ -1012,15 +1012,15 @@ pub struct Program<'a> {
 }
 
 impl<'a> Program<'a> {
-    pub fn from_text(text: &'a String) -> Option<Program<'a>> {
+    pub fn from_text(text: &'a String) -> Result<Program<'a>, String> {
         let raw_lines: Vec<&str> = text.lines().collect();
         let exploration_pass_result = parse_exploration_pass(&raw_lines);
 
         // An error occurred in the first pass
         if let Err(error) = exploration_pass_result {
-            eprintln!("An error occurred while parsing the program...\n");
-            eprintln!("{}", error);
-            return None;
+            return Err(format!(
+                "{}", error
+            ));
         }
 
         let exploration_pass_result = exploration_pass_result.unwrap();
@@ -1037,9 +1037,13 @@ impl<'a> Program<'a> {
             );
 
             if let Err(error) = encoded_instruction {
+                return Err(format!(
+                   "{}\nOccurred on line {}:\n {}", error, *line_idx + 1, *instruction_line
+                ));
+
                 eprintln!("An error occurred while parsing the program...\n");
                 eprintln!("{}\n", error);
-                eprintln!("Occurred on line {}:\n {}", *line_idx, *instruction_line);
+                eprintln!("Occurred on line {}:\n {}", *line_idx + 1, *instruction_line);
                 return None;
             }
 
@@ -1055,11 +1059,11 @@ impl<'a> Program<'a> {
         });
     }
 
-    pub fn to_mem<const MEM_SIZE: usize>(program: &Vec<Word>) -> [u8; MEM_SIZE] {
+    pub fn to_mem<const MEM_SIZE: usize>(&self) -> [u8; MEM_SIZE] {
         let mut memory = [0; MEM_SIZE];
 
         // Copy program
-        for (i, instruction) in program.iter().enumerate() {
+        for (i, instruction) in self.instructions.iter().enumerate() {
             let mem_offset = i * mem::size_of::<Word>();
 
             let instruction_bytes = instruction.to_be_bytes();
@@ -1070,7 +1074,7 @@ impl<'a> Program<'a> {
         }
 
         // Fill the rest with NOP instructions
-        let start_idx = program.len();
+        let start_idx = self.instructions.len();
         let end_idx = MEM_SIZE / std::mem::size_of::<Word>();
 
         for i in start_idx..end_idx {
