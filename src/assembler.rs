@@ -3,6 +3,7 @@ use crate::isa::*;
 use std::{fmt, mem};
 use std::fmt::Formatter;
 use eframe::egui::TextBuffer;
+use std::ops::Range;
 
 
 /*
@@ -151,17 +152,21 @@ impl BranchTarget<'_> {
 }
 
 /// Given raw text describing an instruction, this function returns the encoded instruction
-/// word. If the tokens do not constitute a valid instruction, an error string is returned.
+/// word. No labels can be used as branch targets.
+///
+/// If the tokens do not constitute a valid instruction, an error string is returned.
 pub fn encode_instruction_str(instruction: &str) -> Result<Word, String> {
     let instruction = instruction.trim();
     let tokens: Vec<&str> = instruction.split_whitespace().collect();
 
-    encode_instruction(&tokens)
+    encode_instruction_no_labels(&tokens)
 }
 
 /// Given a series of tokens that form an instruction, this function returns the encoded instruction
-/// word. If the tokens do not constitute a valid instruction, an error string is returned.
-pub fn encode_instruction(tokens: &Vec<&str>) -> Result<Word, String> {
+/// word. No labels can be used as branch targets.
+///
+/// If the tokens do not constitute a valid instruction, an error string is returned.
+pub fn encode_instruction_no_labels(tokens: &Vec<&str>) -> Result<Word, String> {
     let instruction_token = tokens.first().unwrap();
 
     let instruction_word = match *instruction_token {
@@ -453,7 +458,7 @@ pub fn encode_instruction(tokens: &Vec<&str>) -> Result<Word, String> {
 /// word.
 ///
 /// If the tokens do not constitute a valid instruction, an error string is returned.
-pub fn encode_instruction_new(tokens: &Vec<&str>, instruction_idx: usize, labels: &HashMap<&str, usize>) -> Result<Word, String> {
+pub fn encode_instruction(tokens: &Vec<&str>, instruction_idx: usize, labels: &HashMap<&str, usize>) -> Result<Word, String> {
     let instruction_token = tokens.first().unwrap();
 
     /// Used to validate a branch target and resolve it to an offset.
@@ -764,70 +769,6 @@ pub fn encode_instruction_new(tokens: &Vec<&str>, instruction_idx: usize, labels
     return Ok(instruction_word);
 }
 
-
-pub fn assemble_program(program_text: &str) -> Result<Vec<Word>, String> {
-    let mut program: Vec<Word> = Vec::new();
-    let instructions = program_text.split(';');
-
-    for instruction in instructions {
-        let instruction = instruction.trim();
-
-        let tokens: Vec<&str> = instruction.split_whitespace().collect();
-
-        // Skip empty instruction line rather than panicking.
-        // Occurs when a double semi-colon is inserted.
-        if tokens.len() == 0 {
-            continue;
-        }
-
-        // Encode and push
-        let instruction_word = encode_instruction(&tokens)?;
-        program.push(instruction_word);
-    }
-
-    return Ok(program);
-}
-
-pub fn program_to_mem<const MEM_SIZE: usize>(program: &Vec<Word>) -> [u8; MEM_SIZE] {
-    let mut memory = [0; MEM_SIZE];
-
-    // Copy program
-    for (i, instruction) in program.iter().enumerate() {
-        let mem_offset = i * mem::size_of::<Word>();
-
-        let instruction_bytes = instruction.to_be_bytes();
-        memory[mem_offset + 0] = instruction_bytes[0];
-        memory[mem_offset + 1] = instruction_bytes[1];
-        memory[mem_offset + 2] = instruction_bytes[2];
-        memory[mem_offset + 3] = instruction_bytes[3];
-    }
-
-    // Fill the rest with NOP instructions
-    let start_idx = program.len();
-    let end_idx = MEM_SIZE / std::mem::size_of::<Word>();
-
-    for i in start_idx..end_idx {
-        let mem_offset = i * mem::size_of::<Word>();
-
-        let instruction_bytes = NOP.to_be_bytes();
-        memory[mem_offset + 0] = instruction_bytes[0];
-        memory[mem_offset + 1] = instruction_bytes[1];
-        memory[mem_offset + 2] = instruction_bytes[2];
-        memory[mem_offset + 3] = instruction_bytes[3];
-    }
-
-    return memory;
-}
-
-
-
-
-
-
-
-
-
-
 pub fn parse_label_definition(code_line: &str) -> Result<&str, String> {
     // Trim trailing whitespace
     let code_line = code_line.trim_end();
@@ -844,11 +785,10 @@ pub fn parse_label_definition(code_line: &str) -> Result<&str, String> {
     let label_identifier = label_identifier.trim();
 
     fn is_valid_identifier(text: &str) -> bool {
-        text.matches(
-            |c: char| {
-                c.is_whitespace() || c == ':'
-            }
-        ).next().is_none() && text.len() > 0
+        (!text.is_empty()) &&
+            text.chars().all(|c: char| {
+                c.is_alphabetic() || (c == '_')
+            })
     }
 
     // Test if the label identifier is valid
@@ -994,15 +934,15 @@ pub fn parse_exploration_pass<'a>(raw_lines: &Vec<&'a str>) -> Result<Exploratio
     })
 }
 
-pub struct Program<'a> {
+pub struct Program {
     /// The raw program text.
     raw_text: String,
 
-    /// The raw program text split in lines.
-    raw_text_lines: Vec<&'a str>,
+    /// Slices from the raw program text expressed in ranges.
+    raw_text_lines: Vec<Range<usize>>,
 
     /// Maps all labels in the program to their associated instruction index.
-    labels: HashMap<&'a str, usize>,
+    labels: HashMap<String, usize>,
 
     /// Maps instruction indices to lines in the original program text.
     instruction_index: Vec<usize>,
@@ -1011,8 +951,8 @@ pub struct Program<'a> {
     instructions: Vec<Word>,
 }
 
-impl<'a> Program<'a> {
-    pub fn from_text(text: &'a String) -> Result<Program<'a>, String> {
+impl Program {
+    pub fn from_text(text: String) -> Result<Program, String> {
         let raw_lines: Vec<&str> = text.lines().collect();
         let exploration_pass_result = parse_exploration_pass(&raw_lines);
 
@@ -1030,7 +970,7 @@ impl<'a> Program<'a> {
             let instruction_code = strip_comment(*instruction_line);
             let tokens: Vec<&str> = instruction_code.split_whitespace().collect();
 
-            let encoded_instruction = encode_instruction_new(
+            let encoded_instruction = encode_instruction(
                 &tokens,
                 instruction_idx,
                 &exploration_pass_result.labels
@@ -1038,24 +978,31 @@ impl<'a> Program<'a> {
 
             if let Err(error) = encoded_instruction {
                 return Err(format!(
-                   "{}\nOccurred on line {}:\n {}", error, *line_idx + 1, *instruction_line
+                   "Error: {}\n\nOccurred on line {}:\n {}", error, *line_idx + 1, *instruction_line
                 ));
-
-                eprintln!("An error occurred while parsing the program...\n");
-                eprintln!("{}\n", error);
-                eprintln!("Occurred on line {}:\n {}", *line_idx + 1, *instruction_line);
-                return None;
             }
 
             encoded_instructions.push(encoded_instruction.unwrap());
         }
-        
-        return Some(Program {
-            raw_text: text.clone(),
-            raw_text_lines: raw_lines,
-            labels: exploration_pass_result.labels,
+
+        // Convert data structures using slices to avoid Program becoming a self-referencing struct
+
+        let lines_as_ranges = raw_lines.into_iter().map(|s: &str| {
+            let start = s.as_ptr() as usize - text.as_ptr() as usize;
+            let end = start + s.len();
+            Range { start, end }
+        }).collect();
+
+        let labels_as_strings = exploration_pass_result.labels.into_iter().map(|(s, l)| {
+            (s.to_string(), l)
+        }).collect();
+
+        return Ok(Program {
+            raw_text_lines: lines_as_ranges,
+            labels: labels_as_strings,
             instruction_index: exploration_pass_result.instructions.iter().map(|(idx, _)| *idx).collect(),
-            instructions: encoded_instructions
+            instructions: encoded_instructions,
+            raw_text: text,
         });
     }
 
@@ -1089,6 +1036,18 @@ impl<'a> Program<'a> {
 
         return memory;
     }
+
+    pub fn raw_text<'a>(&self) -> &str {
+        self.raw_text.as_str()
+    }
+
+    pub fn get_line_slice(&self, idx: usize) -> &str {
+        &self.raw_text[self.raw_text_lines[idx].clone()]
+    }
+
+    pub fn instruction_to_line(&self, instr_idx: usize) -> Option<usize> {
+        self.instruction_index.get(instr_idx).map(|i| *i)
+    }
 }
 
 #[cfg(test)]
@@ -1098,7 +1057,7 @@ mod tests {
     #[test]
     pub fn test_program_parser() {
         let program_text = include_str!("../test.asm");
-        Program::from_text(&program_text.into());
+        Program::from_text(program_text.into());
     }
 
     #[test]

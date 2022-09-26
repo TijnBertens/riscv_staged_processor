@@ -783,10 +783,7 @@ pub struct WBStage {
     /// IR register for storing current instruction
     pub reg_ir: Register,
 
-    /*
-    Pointer to port collection
-     */
-
+    /// Pointer to port collection
     pub port_collection: Rc<RefCell<PortCollection>>,
 }
 
@@ -944,6 +941,35 @@ impl Processor {
             interlock_unit
         }
     }
+
+    /// Get the current contents of the register file.
+    pub fn get_rf_contents(&self) -> [Word; 32] {
+        let port_collection = self.port_collection.borrow();
+        let mut result = [0; 32];
+
+        for i in 0..32 {
+            result[i] = port_collection.get_port_data(self.id_stage.rf.registers[i].output_port);
+        }
+
+        result
+    }
+
+    /// Get the current value of the program counter (IF stage).
+    pub fn get_current_pc(&self) -> Word {
+        let port_collection = self.port_collection.borrow();
+        port_collection.get_port_data(self.if_stage.reg_pc.output_port)
+    }
+
+    /// Returns whether the cpu is currently stalled or not.
+    pub fn is_stalled(&self) -> bool {
+        let port_collection = self.port_collection.borrow();
+        port_collection.get_port_data(self.interlock_unit.out_not_stall) == 0
+    }
+
+    /// Loads a given program memory into the CPU
+    pub fn load_program_memory(&mut self, program: &[u8; MEM_SIZE]) {
+        self.if_stage.imem.content = program.clone();
+    }
 }
 
 impl Component for Processor {
@@ -969,7 +995,7 @@ mod tests {
         let mut processor = Processor::new();
 
         let program_text = String::from(include_str!("../test.asm"));
-        let program = assembler::Program::from_text(&program_text).expect("Failed to assemble program.");
+        let program = assembler::Program::from_text(program_text).expect("Failed to assemble program.");
 
         processor.if_stage.imem.content = program.to_mem::<MEM_SIZE>();
 

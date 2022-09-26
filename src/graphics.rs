@@ -2,12 +2,24 @@ use eframe::{egui, emath};
 use eframe::egui::{Painter, Shape, Pos2, Stroke, Color32, Vec2, Rect, Sense, Frame, Align2, FontId, Context, ScrollArea};
 use eframe::egui::epaint::PathShape;
 use crate::assembler;
+use crate::assembler::Program;
+use crate::cpu::Processor;
+use crate::components::Component;
+use crate::isa::Word;
+
+#[derive(Copy, Clone, PartialEq)]
+pub enum Tab {
+    Editor,
+    Run
+}
 
 pub struct ProcessorGUI {
     pc: usize,
     pos: egui::Pos2,
-    code: String,
-    assembler_result: String
+
+    selected_tab: Tab,
+    code_editor: CodeEditor,
+    run_environment: RunEnvironment
 }
 
 impl ProcessorGUI {
@@ -15,112 +27,307 @@ impl ProcessorGUI {
         Self {
             pos: (50.0 , 50.0).into(),
             pc: 0,
-            code: String::new(),
-            assembler_result: String::new()
+            selected_tab: Tab::Editor,
+            code_editor: CodeEditor::new(),
+            run_environment: RunEnvironment::new()
         }
-    }
-
-    fn build_table(&mut self, ui: &mut egui::Ui) {
-        use egui_extras::{Size, TableBuilder};
-
-        let program_string = "MVI x1, 50;\
-        MVI x2, 33;\
-        ADDI x2 3;\
-        ADD x3 x2 x1;\
-        BNE x2 -2;\
-        STORE x2 x1 2;\
-        LOAD x3 x1 2;";
-
-        let instructions: Vec<&str> = program_string.split(';').into_iter()
-            .map(|s| s.trim()).collect();
-
-        ui.add(egui::Slider::new(&mut self.pc, 0..=(instructions.len() - 1)));
-
-        let mut table = TableBuilder::new(ui)
-            .striped(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Size::initial(20.0).at_least(20.0))
-            .column(Size::initial(100.0).at_least(100.0))
-            .column(Size::initial(20.0).at_least(20.0))
-            .resizable(true);
-
-        table
-            .header(20.0, |mut header| {
-                header.col(|ui| {
-                    ui.heading("@");
-                });
-                header.col(|ui| {
-                    ui.heading("instruction");
-                });
-                header.col(|ui| {
-                    ui.heading("PC");
-                });
-            })
-            .body(|mut body| {
-                body.rows(15.0, instructions.len(), |row_idx, mut row| {
-                    let address = row_idx * 4;
-                    row.col(|ui| {
-                       ui.monospace(address.to_string());
-                    });
-                    row.col(|ui| {
-                        ui.monospace(instructions[row_idx]);
-                    });
-                    row.col(|ui| {
-                        ui.monospace(
-                            if address == (self.pc*4) { "←" } else { "" }
-                        );
-                    });
-                });
-            });
     }
 }
 
 impl eframe::App for ProcessorGUI {
     fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
-        // egui::SidePanel::left("Program Section").show(ctx, |ui| {
-        //     self.build_table(ui);
-        // });
-        //
-        // egui::CentralPanel::default().show(&ctx, |ui| {
-        //
-        // });
+        egui::TopBottomPanel::top("Tabs").show(&ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.selected_tab, Tab::Editor, "Editor");
+                ui.selectable_value(&mut self.selected_tab, Tab::Run, "Run");
+            });
+        });
+
+        match self.selected_tab {
+            Tab::Editor => { self.code_editor.ui(ctx, |program| {
+                self.run_environment.load_program(program);
+            }); }
+            Tab::Run => { self.run_environment.ui(ctx); }
+        }
+    }
+}
+
+pub struct RunEnvironment {
+    program: Option<Program>,
+    cpu: Processor
+}
+
+impl RunEnvironment {
+    pub fn new() -> Self {
+        Self {
+            program: None,
+            cpu: Processor::new()
+        }
+    }
+
+    pub fn load_program(&mut self, program: Program) {
+        self.cpu = Processor::new();
+        self.cpu.load_program_memory(&program.to_mem());
+        self.program = Some(program);
+    }
+
+    pub fn build_register_table(&self, ui: &mut egui::Ui) {
+        egui::Grid::new("register_state")
+            .striped(true)
+            .show(ui, |ui| {
+                let register_contents = self.cpu.get_rf_contents();
+
+                for y in 0..8 {
+                    for x in 0..4 {
+                        let reg_idx = y*4 + x;
+
+                        let reg_val = if reg_idx == 0 {
+                            0
+                        } else {
+                            register_contents[reg_idx]
+                        };
+
+                        ui.monospace(format!("x{}:", reg_idx));
+                        ui.monospace(reg_val.to_string());
+                    }
+                    ui.end_row();
+                }
+            });
+    }
+
+    pub fn build_program_table(&self, ui: &mut egui::Ui, program: &Program) {
+        egui::ScrollArea::vertical().id_source("code").show(ui, |ui| {
+            let current_program_line = program.instruction_to_line(
+                (self.cpu.get_current_pc() >> 2) as usize
+            ).unwrap_or(usize::MAX);
+
+            egui::Grid::new("code_lines")
+                .striped(true)
+                .min_col_width(0.0)
+                .num_columns(3)
+                .show(ui, |ui| {
+                    // TODO: use the pre-built lines from the program here
+                    for (idx, line) in program.raw_text().lines().into_iter().enumerate() {
+                        ui.monospace(idx.to_string());
+                        ui.add(egui::Separator::default().vertical());
+                        ui.monospace(
+                            if idx == current_program_line {
+                                ">"
+                            } else {
+                                " "
+                            }
+                        );
+                        ui.add(egui::Separator::default().vertical());
+
+                        ui.monospace(line);
+                        ui.end_row();
+                    }
+                });
+        });
+    }
+
+    pub fn ui(&mut self, ctx: &Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Loaded Program");
+            ui.separator();
+
+            if let Some(program) = &self.program {
+                if ui.button("Process Cycle").clicked() {
+                    self.cpu.process_cycle();
+                }
+                self.build_program_table(ui, program);
+            }
+        });
+
+        egui::SidePanel::right("state").show(ctx, |ui| {
+            ui.heading("Register State");
+            ui.separator();
+            self.build_register_table(ui);
+        });
+    }
+}
+
+pub struct CodeEditor {
+    code: String,
+    assembler_output: String,
+    font_size: f32
+}
+
+impl CodeEditor {
+    pub fn new() -> Self {
+        Self {
+            code: String::new(),
+            assembler_output: String::from("Output from the assembler will show up here..."),
+            font_size: 15.0
+        }
+    }
+
+    fn is_instruction(word: &str) -> bool {
+        matches!(
+            word,
+
+            // NOP
+            "NOP" |
+
+            // Moves
+            "MV" | "MVI" |
+
+            // Ops
+            "ADD" | "SLT" | "SLTU" | "AND" | "OR" | "XOR" | "SLL" | "SUB" | "SRL" | "SRA" |
+
+            // OP-IMM
+            "ADDI" | "SLTI" | "SLTIU" | "ANDI" | "ORI" | "XORI" | "SLLI" | "SRLI" | "SRAI" |
+
+            // Branch
+            "BEQ" | "BNE" | "BLT" | "BLTU" | "BGE" | "BGEU" | "BLE" | "BLEU" | "BGT" | "BGTU" |
+
+            // Memory Access
+            "LOAD" | "STORE" |
+
+            // Extension
+            "MUL"
+        )
+    }
+
+    fn is_register(word: &str) -> bool {
+        (word.len() >= 2) &&
+            (word.starts_with('x')) &&
+            (word[1..].chars().all(|c: char| c.is_numeric()))
+    }
+
+    fn is_literal(word: &str) -> bool {
+        (!word.is_empty()) &&
+            (word.chars().all(|c: char| c.is_numeric()))
+    }
+
+    /// Creates a layout job for rendering highlighted code.
+    fn highlight_code(mut code: &str, font_size: f32) -> egui::text::LayoutJob {
+        let mut job = egui::text::LayoutJob::default();
+
+        let font_id = egui::FontId::monospace(font_size);
+
+        let format_normal = egui::TextFormat::simple(font_id.clone(), Color32::WHITE);
+        let format_comment = egui::TextFormat::simple(font_id.clone(), Color32::LIGHT_BLUE);
+        let format_keyword = egui::TextFormat::simple(font_id.clone(), Color32::LIGHT_RED);
+        let format_register = egui::TextFormat::simple(font_id.clone(), Color32::LIGHT_GREEN);
+        let format_literal = egui::TextFormat::simple(font_id.clone(), Color32::KHAKI);
+
+        while !code.is_empty() {
+            if code.starts_with(";") {
+                let end = code.find('\n').unwrap_or(code.len());
+                job.append(&code[..end], 0.0, format_comment.clone());
+                code = &code[end..];
+            } else if code.starts_with(|c: char| c.is_ascii_alphanumeric())  {
+                let end = code[1..]
+                    .find(|c: char| !c.is_ascii_alphanumeric())
+                    .map_or_else(|| code.len(), |i| i + 1);
+
+                let token = &code[..end];
+
+                if Self::is_instruction(token) {
+                    job.append(
+                        token,
+                        0.0,
+                        format_keyword.clone(),
+                    );
+                } else if Self::is_register(token) {
+                    job.append(
+                        token,
+                        0.0,
+                        format_register.clone(),
+                    );
+                } else if Self::is_literal(token) {
+                    job.append(
+                        token,
+                        0.0,
+                        format_literal.clone(),
+                    );
+                } else {
+                    job.append(
+                        token,
+                        0.0,
+                        format_normal.clone(),
+                    );
+                }
+                code = &code[end..];
+            } else if code.starts_with(|c: char| c.is_ascii_whitespace()) {
+                let end = code[1..]
+                    .find(|c: char| !c.is_ascii_whitespace())
+                    .map_or_else(|| code.len(), |i| i + 1);
+                job.append(
+                    &code[..end],
+                    0.0,
+                    format_normal.clone(),
+                );
+                code = &code[end..];
+            } else {
+                let end = code[1..]
+                    .find(|c: char| c.is_ascii_whitespace())
+                    .map_or_else(|| code.len(), |i| i + 1);
+                job.append(
+                    &code[..end],
+                    0.0,
+                    format_normal.clone(),
+                );
+                code = &code[end..];
+            }
+        }
+
+        return job;
+    }
+
+    pub fn ui(&mut self, ctx: &Context, on_program_load: impl FnOnce(Program)) {
+        egui::TopBottomPanel::top("controls").show(&ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("assemble").clicked() {
+                    let assembler_result = assembler::Program::from_text(self.code.clone());
+                    if let Err(error) = assembler_result {
+                        self.assembler_output = error;
+                    } else {
+                        self.assembler_output = String::from("Program assembled correctly!");
+                    }
+                }
+                if ui.button("load").clicked() {
+                    let assembler_result = assembler::Program::from_text(self.code.clone());
+                    if let Err(error) = assembler_result {
+                        self.assembler_output = error;
+                    } else {
+                        self.assembler_output = String::from("Program assembled correctly!");
+                        on_program_load(assembler_result.unwrap());
+                    }
+                }
+            });
+        });
 
         egui::SidePanel::right("console_panel").default_width(400.0).show(&ctx, |ui| {
             ScrollArea::vertical()
                 .id_source("console")
                 .show(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut self.code.as_str())
+                    ui.add(egui::TextEdit::multiline(&mut self.assembler_output.as_str())
                         .desired_width(f32::INFINITY)
+                        .code_editor()
                     )
                 });
         });
 
         egui::CentralPanel::default().show(&ctx, |ui| {
-            if ui.button("assemble").clicked() {
-                assembler::Program::from_text(&self.code);
-            }
             ScrollArea::vertical()
                 .id_source("source")
                 .show(ui, |ui| {
+                    // TODO: cache highlighting result
+                    let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
+                        let mut layout_job: egui::text::LayoutJob = Self::highlight_code(string, self.font_size);
+                        layout_job.wrap.max_width = wrap_width;
+                        ui.fonts().layout_job(layout_job)
+                    };
+
                     ui.add(egui::TextEdit::multiline(&mut self.code)
-                        .desired_width(f32::INFINITY))
+                        .code_editor()
+                        .font(egui::FontId::monospace(self.font_size))
+                        .desired_width(f32::INFINITY)
+                        .desired_rows((ui.available_height() / self.font_size) as usize)
+                        .layouter(&mut layouter))
                 });
-            // ui.columns(2, |columns| {
-            //     ScrollArea::vertical()
-            //         .id_source("source")
-            //         .show(&mut columns[0], |ui| {
-            //             ui.add(egui::TextEdit::multiline(&mut self.code)
-            //                 .desired_width(f32::INFINITY))
-            //         });
-            //
-            //     ScrollArea::vertical()
-            //         .id_source("console")
-            //         .show(&mut columns[1], |ui| {
-            //             ui.add(egui::TextEdit::multiline(&mut self.code.as_str())
-            //                 .desired_width(f32::INFINITY)
-            //                 )
-            //         });
-            // });
         });
     }
 }
