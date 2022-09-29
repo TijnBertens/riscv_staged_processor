@@ -25,14 +25,14 @@ pub mod func_code_3 {
     use crate::isa::Word;
 
     // Conditional branches
-    // First bit determines unsigned vs signed versions, last 2 bit determine the condition.
+    // First bit determines unsigned vs signed versions, last 2 bits determine the condition.
     // Other branch conditions (e.g. BGT and BLE) are synthesized by swapping operands.
     pub const BEQ: Word = 0b_000;
     pub const BNE: Word = 0b_001;
     pub const BLT: Word = 0b_010;
     pub const BGE: Word = 0b_011;
-    pub const BLTU: Word = 0b_110;      // Unsigned version (highest bit set to 1)
-    pub const BGEU: Word = 0b_111;      // Unsigned version (highest bit set to 1)
+    pub const BLTU: Word = 0b_110; // Unsigned version (highest bit set to 1)
+    pub const BGEU: Word = 0b_111; // Unsigned version (highest bit set to 1)
 
     // Register-register ops
     pub const ADD: Word = 0b_000;
@@ -124,7 +124,6 @@ pub fn extract_imm_s_type(instruction: Word) -> Word {
     // The sign bit is always bit 31
     let is_negative = ((instruction >> 31) & 1) == 1;
 
-
     if is_negative {
         const PADDING_NEG: Word = 0b_11111111_11111111_11110000_00000000;
         imm_value | PADDING_NEG
@@ -188,39 +187,51 @@ pub fn extract_rd(instruction: Word) -> Word {
 }
 
 /// Builds an R-type instruction from its given components.
-pub const fn build_instruction_r_type(op_code: Word, func_7: Word, func_3: Word,
-                                      dest: Word, s1: Word, s2: Word) -> Word {
-    op_code |
-        (dest << 7) |
-        (func_3 << 12) |
-        (s1 << 15) |
-        (s2 << 20) |
-        (func_7 << 25)
+pub const fn build_instruction_r_type(
+    op_code: Word,
+    func_7: Word,
+    func_3: Word,
+    dest: Word,
+    s1: Word,
+    s2: Word,
+) -> Word {
+    op_code | (dest << 7) | (func_3 << 12) | (s1 << 15) | (s2 << 20) | (func_7 << 25)
 }
 
 /// Builds an I-type instruction from its given components.
-pub const fn build_instruction_i_type(op_code: Word, func_3: Word,
-                                      dest: Word, s1: Word, imm: Word) -> Word {
-    op_code |
-        (dest << 7) |
-        (func_3 << 12) |
-        (s1 << 15) |
-        (imm << 20)
+pub const fn build_instruction_i_type(
+    op_code: Word,
+    func_3: Word,
+    dest: Word,
+    s1: Word,
+    imm: Word,
+) -> Word {
+    op_code | (dest << 7) | (func_3 << 12) | (s1 << 15) | (imm << 20)
 }
 
 /// Builds an S-type instruction from its given components.
-pub const fn build_instruction_s_type(op_code: Word, func_3: Word,
-                                      s1: Word, s2: Word, imm: Word) -> Word {
-    op_code |
-        ((imm & 0b_011111) << 7) |
-        (func_3 << 12) |
-        (s1 << 15) |
-        (s2 << 20) |
-        ((imm & 0b_0111111100000) << (25 - 5))
+pub const fn build_instruction_s_type(
+    op_code: Word,
+    func_3: Word,
+    s1: Word,
+    s2: Word,
+    imm: Word,
+) -> Word {
+    op_code
+        | ((imm & 0b_011111) << 7)
+        | (func_3 << 12)
+        | (s1 << 15)
+        | (s2 << 20)
+        | ((imm & 0b_0111111100000) << (25 - 5))
 }
 
 /// Builds a B-type instruction from its given components.
-pub const fn build_instruction_b_type(op_code: Word, func_3: Word,
-                                      s1: Word, s2: Word, imm: Word) -> Word {
+pub const fn build_instruction_b_type(
+    op_code: Word,
+    func_3: Word,
+    s1: Word,
+    s2: Word,
+    imm: Word,
+) -> Word {
     build_instruction_s_type(op_code, func_3, s1, s2, imm)
 }
