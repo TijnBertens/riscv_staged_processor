@@ -836,6 +836,9 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    use egui;
+    use egui::{emath, Frame, Pos2, Rect, Sense, Vec2};
+
     pub struct TestGUI<D, F>
     where
         F: FnMut(&mut D, &mut egui::Ui) -> (),
@@ -864,7 +867,7 @@ mod tests {
     }
 
     impl<D, F: FnMut(&mut D, &mut egui::Ui) -> ()> eframe::App for TestGUI<D, F> {
-        fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
+        fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
             egui::CentralPanel::default().show(&ctx, |ui| {
                 (self.f)(&mut self.data, ui);
             });
