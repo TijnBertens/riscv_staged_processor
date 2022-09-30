@@ -1,10 +1,8 @@
-use std::collections::HashMap;
 use crate::isa::*;
-use std::{fmt, mem};
+use std::collections::HashMap;
 use std::fmt::Formatter;
-use eframe::egui::TextBuffer;
 use std::ops::Range;
-
+use std::{fmt, mem};
 
 /*
 
@@ -25,26 +23,43 @@ Data:
 
 macro_rules! check_num_params {
     ($tokens:expr, $expectation:literal) => {
-        if $tokens.len() != ($expectation + 1) { return Err(format!("Invalid number of parameters. Expected {} but got {}.", $expectation, $tokens.len() - 1)); }
-    }
+        if $tokens.len() != ($expectation + 1) {
+            return Err(format!(
+                "Invalid number of parameters. Expected {} but got {}.",
+                $expectation,
+                $tokens.len() - 1
+            ));
+        }
+    };
 }
 
 macro_rules! parse_param {
     ($val:expr => REG $name:ident) => {
         let $name = token_to_register($val);
-        if $name == None { return Err(format!("Invalid register identifier: '{}' !", $val)); }
+        if $name == None {
+            return Err(format!("Invalid register identifier: '{}' !", $val));
+        }
         let $name = $name.unwrap();
     };
     ($val:expr => IMM $name:ident) => {
         let $name = token_to_literal($val);
-        if $name == None { return Err(format!("Invalid immediate: '{}' !", $val)); }
+        if $name == None {
+            return Err(format!("Invalid immediate: '{}' !", $val));
+        }
         let $name = $name.unwrap().as_word();
     };
     ($val:expr => IMM $name:ident ($max_len:expr)) => {
         let $name = token_to_literal($val);
-        if $name == None { return Err(format!("Invalid immediate: '{}' !", $val)); }
+        if $name == None {
+            return Err(format!("Invalid immediate: '{}' !", $val));
+        }
         let $name = $name.unwrap();
-        if !$name.fits_in($max_len) { return Err(format!("Immediate '{}' does not fit in '{}' bits!", $val, $max_len)); }
+        if !$name.fits_in($max_len) {
+            return Err(format!(
+                "Immediate '{}' does not fit in '{}' bits!",
+                $val, $max_len
+            ));
+        }
         let $name = $name.as_word();
     };
     ($val:expr => BRANCH $name:ident) => {
@@ -54,7 +69,7 @@ macro_rules! parse_param {
         } else {
             BranchTarget::Label($val)
         };
-    }
+    };
 }
 
 /// Parses a token into a register. Registers are expected in the form "xn", where n is the register
@@ -71,47 +86,43 @@ fn token_to_register(token: &str) -> Option<Word> {
         Some(reg_number)
     } else {
         None
-    }
+    };
 }
 
 // Wrapper for signed or unsigned literals. Provides some utilities for performing checks.
 #[derive(Debug, PartialEq)]
 pub enum Literal {
     Signed(SWord),
-    Unsigned(Word)
+    Unsigned(Word),
 }
 
 impl Literal {
     pub fn as_word(&self) -> Word {
         match self {
             Self::Signed(val) => *val as Word,
-            Self::Unsigned(val) => *val
+            Self::Unsigned(val) => *val,
         }
     }
 
     pub fn is_signed(&self) -> bool {
         match self {
             Self::Signed(_) => true,
-            Self::Unsigned(_) => false
+            Self::Unsigned(_) => false,
         }
     }
 
     pub fn is_unsigned(&self) -> bool {
         match self {
             Self::Signed(_) => false,
-            Self::Unsigned(_) => true
+            Self::Unsigned(_) => true,
         }
     }
 
     /// Does this literal fit in a given number of bits?
     pub fn fits_in(&self, num_bits: u32) -> bool {
         match self {
-            Self::Signed(val) => {
-                *val < (1 << (num_bits - 1)) && -(*val) <= (1 << (num_bits - 1))
-            },
-            Self::Unsigned(val) => {
-                *val < (1 << num_bits)
-            }
+            Self::Signed(val) => *val < (1 << (num_bits - 1)) && -(*val) <= (1 << (num_bits - 1)),
+            Self::Unsigned(val) => *val < (1 << num_bits),
         }
     }
 }
@@ -128,7 +139,7 @@ fn token_to_literal(token: &str) -> Option<Literal> {
 /// Target of a branch instruction can either be a label or an offset given as a literal.
 pub enum BranchTarget<'a> {
     Label(&'a str),
-    Literal(Literal)
+    Literal(Literal),
 }
 
 impl BranchTarget<'_> {
@@ -136,9 +147,13 @@ impl BranchTarget<'_> {
     /// map of possible labels.
     ///
     /// Returns None if the label cannot be resolved.
-    pub fn resolve_offset(&self, instruction_idx: usize, labels: &HashMap<&str, usize>) -> Option<Word> {
+    pub fn resolve_offset(
+        &self,
+        instruction_idx: usize,
+        labels: &HashMap<&str, usize>,
+    ) -> Option<Word> {
         match self {
-            BranchTarget::Literal(literal) => { Some(literal.as_word()) }
+            BranchTarget::Literal(literal) => Some(literal.as_word()),
             BranchTarget::Label(label) => {
                 if let Some(target_idx) = labels.get(label) {
                     let offset = *target_idx as SWord - (instruction_idx + 1) as SWord;
@@ -205,70 +220,140 @@ pub fn encode_instruction_no_labels(tokens: &Vec<&str>) -> Result<Word, String> 
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::ADD, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::ADD,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SLT" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SLT, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::SLT,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SLTU" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SLTU, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::SLTU,
+                dst,
+                src1,
+                src2,
+            )
         }
         "AND" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::AND, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::AND,
+                dst,
+                src1,
+                src2,
+            )
         }
         "OR" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::OR, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::OR,
+                dst,
+                src1,
+                src2,
+            )
         }
         "XOR" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::XOR, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::XOR,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SLL" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SLL_SUB, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::SLL_SUB,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SUB" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE_ALT, func_code_3::SLL_SUB, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE_ALT,
+                func_code_3::SLL_SUB,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SRL" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SRL_SRA, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::SRL_SRA,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SRA" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE_ALT, func_code_3::SRL_SRA, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE_ALT,
+                func_code_3::SRL_SRA,
+                dst,
+                src1,
+                src2,
+            )
         }
 
         /*
@@ -335,7 +420,13 @@ pub fn encode_instruction_no_labels(tokens: &Vec<&str>) -> Result<Word, String> 
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => IMM imm (5));
-            build_instruction_i_type(op_code::OP_IMM, func_code_3::SRLI_SRAI, dst, src1, imm | 0b0100000_00000)
+            build_instruction_i_type(
+                op_code::OP_IMM,
+                func_code_3::SRLI_SRAI,
+                dst,
+                src1,
+                imm | 0b0100000_00000,
+            )
         }
 
         /*
@@ -442,23 +533,34 @@ pub fn encode_instruction_no_labels(tokens: &Vec<&str>) -> Result<Word, String> 
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::MULDIV, func_code_3::MUL, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::MULDIV,
+                func_code_3::MUL,
+                dst,
+                src1,
+                src2,
+            )
         }
 
-
-        _ => { return Err(format!("Unrecognized instruction: {}", *instruction_token)); }
+        _ => {
+            return Err(format!("Unrecognized instruction: {}", *instruction_token));
+        }
     };
 
     return Ok(instruction_word);
 }
-
 
 /// Given a series of tokens that form an instruction, the index of the instruction in the program,
 /// and a map of valid labels in the program, this function returns the encoded instruction
 /// word.
 ///
 /// If the tokens do not constitute a valid instruction, an error string is returned.
-pub fn encode_instruction(tokens: &Vec<&str>, instruction_idx: usize, labels: &HashMap<&str, usize>) -> Result<Word, String> {
+pub fn encode_instruction(
+    tokens: &Vec<&str>,
+    instruction_idx: usize,
+    labels: &HashMap<&str, usize>,
+) -> Result<Word, String> {
     let instruction_token = tokens.first().unwrap();
 
     /// Used to validate a branch target and resolve it to an offset.
@@ -466,14 +568,20 @@ pub fn encode_instruction(tokens: &Vec<&str>, instruction_idx: usize, labels: &H
         ($target:expr => $name:ident) => {
             let $name = $target.resolve_offset(instruction_idx, labels);
             if $name.is_none() {
-                let label = if let BranchTarget::Label(label) = $target { label } else { unreachable!() };
+                let label = if let BranchTarget::Label(label) = $target {
+                    label
+                } else {
+                    unreachable!()
+                };
                 return Err(format!("Label '{}' does not exist!", label));
             }
             let $name = $name.unwrap();
             if !Literal::Signed($name as SWord).fits_in(12) {
-                return Err(format!("Branch target is too far away and does not fit in 12 bits!"));
+                return Err(format!(
+                    "Branch target is too far away and does not fit in 12 bits!"
+                ));
             }
-        }
+        };
     }
 
     let instruction_word = match *instruction_token {
@@ -512,70 +620,140 @@ pub fn encode_instruction(tokens: &Vec<&str>, instruction_idx: usize, labels: &H
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::ADD, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::ADD,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SLT" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SLT, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::SLT,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SLTU" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SLTU, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::SLTU,
+                dst,
+                src1,
+                src2,
+            )
         }
         "AND" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::AND, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::AND,
+                dst,
+                src1,
+                src2,
+            )
         }
         "OR" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::OR, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::OR,
+                dst,
+                src1,
+                src2,
+            )
         }
         "XOR" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::XOR, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::XOR,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SLL" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SLL_SUB, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::SLL_SUB,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SUB" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE_ALT, func_code_3::SLL_SUB, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE_ALT,
+                func_code_3::SLL_SUB,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SRL" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE, func_code_3::SRL_SRA, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE,
+                func_code_3::SRL_SRA,
+                dst,
+                src1,
+                src2,
+            )
         }
         "SRA" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::BASE_ALT, func_code_3::SRL_SRA, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::BASE_ALT,
+                func_code_3::SRL_SRA,
+                dst,
+                src1,
+                src2,
+            )
         }
 
         /*
@@ -642,7 +820,13 @@ pub fn encode_instruction(tokens: &Vec<&str>, instruction_idx: usize, labels: &H
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => IMM imm (5));
-            build_instruction_i_type(op_code::OP_IMM, func_code_3::SRLI_SRAI, dst, src1, imm | 0b0100000_00000)
+            build_instruction_i_type(
+                op_code::OP_IMM,
+                func_code_3::SRLI_SRAI,
+                dst,
+                src1,
+                imm | 0b0100000_00000,
+            )
         }
 
         /*
@@ -759,11 +943,22 @@ pub fn encode_instruction(tokens: &Vec<&str>, instruction_idx: usize, labels: &H
             parse_param!(tokens[1] => REG dst);
             parse_param!(tokens[2] => REG src1);
             parse_param!(tokens[3] => REG src2);
-            build_instruction_r_type(op_code::OP, func_code_7::MULDIV, func_code_3::MUL, dst, src1, src2)
+            build_instruction_r_type(
+                op_code::OP,
+                func_code_7::MULDIV,
+                func_code_3::MUL,
+                dst,
+                src1,
+                src2,
+            )
         }
 
-
-        _ => { return Err(format!("Unrecognized instruction: '{}'", *instruction_token)); }
+        _ => {
+            return Err(format!(
+                "Unrecognized instruction: '{}'",
+                *instruction_token
+            ));
+        }
     };
 
     return Ok(instruction_word);
@@ -775,9 +970,9 @@ pub fn parse_label_definition(code_line: &str) -> Result<&str, String> {
 
     // The label definition must end with a ':' character
     if !code_line.ends_with(':') {
-        return Err(
-            format!("Expected ':' character at the end of label definition!")
-        );
+        return Err(format!(
+            "Expected ':' character at the end of label definition!"
+        ));
     }
 
     // Remove the ':' at the end of the line
@@ -785,17 +980,14 @@ pub fn parse_label_definition(code_line: &str) -> Result<&str, String> {
     let label_identifier = label_identifier.trim();
 
     fn is_valid_identifier(text: &str) -> bool {
-        (!text.is_empty()) &&
-            text.chars().all(|c: char| {
-                c.is_alphabetic() || (c == '_')
-            })
+        (!text.is_empty()) && text.chars().all(|c: char| c.is_alphabetic() || (c == '_'))
     }
 
     // Test if the label identifier is valid
     if !is_valid_identifier(label_identifier) {
-        return Err(
-            format!("Invalid label identifier! No whitespace or ':' characters allowed!")
-        );
+        return Err(format!(
+            "Invalid label identifier! No whitespace or ':' characters allowed!"
+        ));
     }
 
     return Ok(label_identifier);
@@ -807,7 +999,7 @@ pub struct ExplorationPassResult<'a> {
 
     /// An array of instructions. A tuple is stored for each instruction, capturing the line number
     /// at which the instruction is defined, together with the text defining the instruction.
-    instructions: Vec<(usize, &'a str)>
+    instructions: Vec<(usize, &'a str)>,
 }
 
 pub struct ExplorationPassError<'a> {
@@ -824,20 +1016,32 @@ impl<'a> ExplorationPassError<'a> {
         Self {
             line_number,
             raw_line,
-            message
+            message,
         }
     }
 }
 
 impl fmt::Display for ExplorationPassError<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "Cause: {} \n\n Occurred on line {}:\n {} \n", self.message, self.line_number + 1, self.raw_line)
+        write!(
+            f,
+            "Cause: {} \n\n Occurred on line {}:\n {} \n",
+            self.message,
+            self.line_number + 1,
+            self.raw_line
+        )
     }
 }
 
 impl fmt::Debug for ExplorationPassError<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "Cause: {} \n\n Occurred on line {}:\n {}", self.message, self.line_number + 1, self.raw_line)
+        write!(
+            f,
+            "Cause: {} \n\n Occurred on line {}:\n {}",
+            self.message,
+            self.line_number + 1,
+            self.raw_line
+        )
     }
 }
 
@@ -853,13 +1057,15 @@ pub fn strip_comment(raw_line: &str) -> &str {
 /// Makes an exploratory first pass through raw program text (lines). During this pass:
 /// (1) instructions are identified and located, but not parsed, and
 /// (2) all labels are identified and their corresponding addresses are determined.
-pub fn parse_exploration_pass<'a>(raw_lines: &Vec<&'a str>) -> Result<ExplorationPassResult<'a>, ExplorationPassError<'a>> {
+pub fn parse_exploration_pass<'a>(
+    raw_lines: &Vec<&'a str>,
+) -> Result<ExplorationPassResult<'a>, ExplorationPassError<'a>> {
     // Variables used in the result
     let mut labels: HashMap<&str, usize> = HashMap::new();
     let mut instructions: Vec<(usize, &'a str)> = Vec::new();
 
     // Variables for bookkeeping
-    let mut last_label: Option<(usize, &str)> = None;       // (line_number, identifier)
+    let mut last_label: Option<(usize, &str)> = None; // (line_number, identifier)
     let mut instruction_counter: usize = 0;
 
     for (line_idx, line) in raw_lines.iter().enumerate() {
@@ -874,11 +1080,7 @@ pub fn parse_exploration_pass<'a>(raw_lines: &Vec<&'a str>) -> Result<Exploratio
 
             if let Err(error_message) = parse_result {
                 // An error occurred while parsing
-                return Err(ExplorationPassError::new(
-                    line_idx,
-                    *line,
-                    error_message
-                ));
+                return Err(ExplorationPassError::new(line_idx, *line, error_message));
             }
 
             // Parsing was successful, so we can unwrap the identifier
@@ -889,7 +1091,7 @@ pub fn parse_exploration_pass<'a>(raw_lines: &Vec<&'a str>) -> Result<Exploratio
                 return Err(ExplorationPassError::new(
                     line_idx,
                     *line,
-                    format!("Label identifier '{}' is already defined!", identifier)
+                    format!("Label identifier '{}' is already defined!", identifier),
                 ));
             }
 
@@ -923,14 +1125,14 @@ pub fn parse_exploration_pass<'a>(raw_lines: &Vec<&'a str>) -> Result<Exploratio
         return Err(ExplorationPassError::new(
             line_idx,
             raw_lines[line_idx],
-            format!("Label '{}' does not point to an instruction!", identifier)
+            format!("Label '{}' does not point to an instruction!", identifier),
         ));
     }
 
     // All is Ok, return results
     Ok(ExplorationPassResult {
         labels,
-        instructions
+        instructions,
     })
 }
 
@@ -958,27 +1160,27 @@ impl Program {
 
         // An error occurred in the first pass
         if let Err(error) = exploration_pass_result {
-            return Err(format!(
-                "{}", error
-            ));
+            return Err(format!("{}", error));
         }
 
         let exploration_pass_result = exploration_pass_result.unwrap();
         let mut encoded_instructions: Vec<Word> = Vec::new();
 
-        for (instruction_idx, (line_idx, instruction_line)) in exploration_pass_result.instructions.iter().enumerate() {
+        for (instruction_idx, (line_idx, instruction_line)) in
+            exploration_pass_result.instructions.iter().enumerate()
+        {
             let instruction_code = strip_comment(*instruction_line);
             let tokens: Vec<&str> = instruction_code.split_whitespace().collect();
 
-            let encoded_instruction = encode_instruction(
-                &tokens,
-                instruction_idx,
-                &exploration_pass_result.labels
-            );
+            let encoded_instruction =
+                encode_instruction(&tokens, instruction_idx, &exploration_pass_result.labels);
 
             if let Err(error) = encoded_instruction {
                 return Err(format!(
-                   "Error: {}\n\nOccurred on line {}:\n {}", error, *line_idx + 1, *instruction_line
+                    "Error: {}\n\nOccurred on line {}:\n {}",
+                    error,
+                    *line_idx + 1,
+                    *instruction_line
                 ));
             }
 
@@ -987,20 +1189,29 @@ impl Program {
 
         // Convert data structures using slices to avoid Program becoming a self-referencing struct
 
-        let lines_as_ranges = raw_lines.into_iter().map(|s: &str| {
-            let start = s.as_ptr() as usize - text.as_ptr() as usize;
-            let end = start + s.len();
-            Range { start, end }
-        }).collect();
+        let lines_as_ranges = raw_lines
+            .into_iter()
+            .map(|s: &str| {
+                let start = s.as_ptr() as usize - text.as_ptr() as usize;
+                let end = start + s.len();
+                Range { start, end }
+            })
+            .collect();
 
-        let labels_as_strings = exploration_pass_result.labels.into_iter().map(|(s, l)| {
-            (s.to_string(), l)
-        }).collect();
+        let labels_as_strings = exploration_pass_result
+            .labels
+            .into_iter()
+            .map(|(s, l)| (s.to_string(), l))
+            .collect();
 
         return Ok(Program {
             raw_text_lines: lines_as_ranges,
             labels: labels_as_strings,
-            instruction_index: exploration_pass_result.instructions.iter().map(|(idx, _)| *idx).collect(),
+            instruction_index: exploration_pass_result
+                .instructions
+                .iter()
+                .map(|(idx, _)| *idx)
+                .collect(),
             instructions: encoded_instructions,
             raw_text: text,
         });
@@ -1055,42 +1266,35 @@ mod tests {
     use super::*;
 
     #[test]
-    pub fn test_program_parser() {
-        let program_text = include_str!("../test.asm");
-        Program::from_text(program_text.into());
-    }
-
-    #[test]
     fn test_parse_label_definition() {
         macro_rules! create_test {
-        // Expect success
-        ($code:literal -> $exp:literal) => {
-            let result = parse_label_definition(
-                $code
-            );
+            // Expect success
+            ($code:literal -> $exp:literal) => {
+                let result = parse_label_definition($code);
 
-            if let Ok(ident) = result {
-                assert_eq!(ident, $exp);
-            } else {
-                let error = result.unwrap_err();
-                assert!(false, "Expected success, but found fail: \n {}", error);
-            }
-        };
+                if let Ok(ident) = result {
+                    assert_eq!(ident, $exp);
+                } else {
+                    let error = result.unwrap_err();
+                    assert!(false, "Expected success, but found fail: \n {}", error);
+                }
+            };
 
-        // Expect failure
-        ($code:literal FAILS) => {
-            let result = parse_label_definition(
-                $code
-            );
+            // Expect failure
+            ($code:literal FAILS) => {
+                let result = parse_label_definition($code);
 
-            if let Ok(ident) = result {
-                assert!(false, "Expected fail, but found parsed identifier: {}", ident);
-            } else {
-                let error = result.unwrap_err();
-                assert!(true);
-            }
+                if let Ok(ident) = result {
+                    assert!(
+                        false,
+                        "Expected fail, but found parsed identifier: {}",
+                        ident
+                    );
+                } else {
+                    assert!(true);
+                }
+            };
         }
-    }
 
         create_test!("balab:" -> "balab");
         create_test!("   balab: " -> "balab");

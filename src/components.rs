@@ -1,4 +1,3 @@
-use crate::assembler;
 use crate::circuit::*;
 use crate::isa::*;
 use std::cell::RefCell;
@@ -2645,6 +2644,7 @@ mod tests {
 
     mod misc {
         use super::*;
+        use crate::assembler;
 
         #[test]
         pub fn test_check_raw_hazard() {

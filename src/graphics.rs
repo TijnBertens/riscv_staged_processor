@@ -828,6 +828,7 @@ mod component_graphics {
     }
 }
 
+#[allow(unused_imports)]
 mod tests {
     use super::component_graphics::*;
     use super::*;
@@ -875,6 +876,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_draw_constant_register() {
         struct TestData {
             reg_c: ConstantRegister,
