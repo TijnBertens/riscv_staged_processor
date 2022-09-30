@@ -1,4 +1,3 @@
-use crate::assembler;
 use crate::circuit::*;
 use crate::components::*;
 use crate::isa::*;
@@ -27,12 +26,6 @@ pub struct IFStage {
 
     /// Constant 'MEM_LEN_SHORT' for fetching 2-byte instructions
     pub reg_c_len_mode: ConstantRegister,
-
-    /// NPC register storing next program counter
-    pub reg_npc: GuardedRegister,
-
-    /// IR register for storing fetched instruction
-    pub reg_ir: GuardedRegister,
 }
 
 impl IFStage {
@@ -46,10 +39,11 @@ impl IFStage {
         );
 
         // Program counter register (still need connection to interlock unit and branch feedback)
-        let mut reg_pc = GuardedRegister::new(
+        let mut reg_pc = GuardedRegister::new_with_initial(
             port_collection.clone(),
             PORT_NULL_ID,
             PORT_NULL_ID,
+            0,
             String::from("if_reg_pc"),
         );
 
@@ -73,20 +67,6 @@ impl IFStage {
             String::from("if_imem"),
         );
 
-        // Pipeline registers: IR and NPC (still need connection to interlock unit)
-        let reg_npc = GuardedRegister::new(
-            port_collection.clone(),
-            mux.output_port,
-            PORT_NULL_ID,
-            String::from("if_npc"),
-        );
-        let reg_ir = GuardedRegister::new(
-            port_collection.clone(),
-            imem.output_port,
-            PORT_NULL_ID,
-            String::from("if_ir"),
-        );
-
         // Set PC input to the MUX output
         reg_pc.input = mux.output_port;
 
@@ -97,16 +77,21 @@ impl IFStage {
             imem,
             reg_c_4,
             reg_c_len_mode,
-            reg_npc,
-            reg_ir,
         }
     }
 
     /// Makes necessary connections for interlock unit.
     pub fn connect_interlock_unit(&mut self, iu_out: PortID) {
         self.reg_pc.input_enable = iu_out;
-        self.reg_ir.input_enable = iu_out;
-        self.reg_npc.input_enable = iu_out;
+    }
+
+    /// Cycles only the mux.
+    ///
+    /// The IF-stage mux takes branch-related inputs from the EX stage. These can be updated after the IF
+    /// stage has completed its cycle. An extra update of the mux is required in this case, such that the
+    /// CPU is not left in an invalid state.
+    pub fn cycle_mux(&mut self) {
+        self.mux.process_cycle();
     }
 }
 
@@ -116,19 +101,60 @@ impl Component for IFStage {
         self.reg_c_len_mode.process_cycle();
         self.reg_c_4.process_cycle();
 
-        // Get PC
+        // Get PC for next instruction
         self.reg_pc.process_cycle();
 
-        // Increase PC
+        // Compute NPC
         self.addr.process_cycle();
         self.mux.process_cycle();
 
         // Instruction fetch
         self.imem.process_cycle();
+    }
+}
 
-        // Pipeline registers
+/*
+Processor -- IF/ID pipeline registers
+*/
+
+pub struct IFIDPipelineRegisters {
+    /// NPC register storing next program counter
+    pub reg_npc: GuardedRegister,
+
+    /// IR register for storing fetched instruction
+    pub reg_ir: GuardedRegister,
+}
+
+impl Component for IFIDPipelineRegisters {
+    fn process_cycle(&mut self) {
+        // Process all registers
         self.reg_npc.process_cycle();
         self.reg_ir.process_cycle();
+    }
+}
+
+impl IFIDPipelineRegisters {
+    pub fn new(port_collection: Rc<RefCell<PortCollection>>, if_stage: &IFStage) -> Self {
+        // Pipeline registers: IR and NPC (still need connection to interlock unit)
+        let reg_npc = GuardedRegister::new(
+            port_collection.clone(),
+            if_stage.mux.output_port,
+            PORT_NULL_ID,
+            String::from("IFID_npc"),
+        );
+        let reg_ir = GuardedRegister::new(
+            port_collection.clone(),
+            if_stage.imem.output_port,
+            PORT_NULL_ID,
+            String::from("IFID_ir"),
+        );
+
+        Self { reg_npc, reg_ir }
+    }
+
+    pub fn connect_interlock_unit(&mut self, iu_out: PortID) {
+        self.reg_ir.input_enable = iu_out;
+        self.reg_npc.input_enable = iu_out;
     }
 }
 
@@ -160,10 +186,86 @@ pub struct IDStage {
 
     /// Sign extension unit for processing immediate values
     pub sign_extend: ImmSignExtender,
+}
 
-    /*
-    Pipeline registers
-    */
+impl IDStage {
+    pub fn new(
+        port_collection: Rc<RefCell<PortCollection>>,
+        if_id_pipeline_regs: &IFIDPipelineRegisters,
+    ) -> Self {
+        // Sign extension unit used for exracting and assembling immediate values from instructions
+        let sign_extend = ImmSignExtender::new(
+            port_collection.clone(),
+            if_id_pipeline_regs.reg_ir.output_port,
+            String::from("id_imm"),
+        );
+
+        // Registers used for extracting register numbers from instruction
+        let reg_shift_rs1 = BitSelectionRegister::<15, 5>::new(
+            port_collection.clone(),
+            if_id_pipeline_regs.reg_ir.output_port,
+            String::from("id_reg_shift_rs1"),
+        );
+        let reg_shift_rs2 = BitSelectionRegister::<20, 5>::new(
+            port_collection.clone(),
+            if_id_pipeline_regs.reg_ir.output_port,
+            String::from("id_reg_shift_rs2"),
+        );
+        let reg_shift_rd = BitSelectionRegister::<7, 5>::new(
+            port_collection.clone(),
+            if_id_pipeline_regs.reg_ir.output_port,
+            String::from("id_reg_shift_rsd"),
+        );
+
+        // Register file
+        let mut rf = RegisterFile::<32>::new(
+            port_collection.clone(),
+            reg_shift_rs1.output_port,
+            reg_shift_rs2.output_port,
+            PORT_NULL_ID, // Originates from WB stage
+            PORT_NULL_ID, // Originates from WB stage
+            PORT_NULL_ID,
+        );
+
+        // Overwrite input 0 on the output muxes of the register file. Reading x0 should always
+        // return 0, which we will read from a constant register.
+        let reg_c_x0 =
+            ConstantRegister::new(port_collection.clone(), 0, String::from("id_reg_c_x0"));
+
+        rf.mux_out_a.inputs[0] = reg_c_x0.output_port;
+        rf.mux_out_b.inputs[0] = reg_c_x0.output_port;
+
+        Self {
+            reg_shift_rd,
+            reg_shift_rs1,
+            reg_shift_rs2,
+            reg_c_x0,
+            rf,
+            sign_extend,
+        }
+    }
+}
+
+impl Component for IDStage {
+    fn process_cycle(&mut self) {
+        // Constants
+        self.reg_c_x0.process_cycle();
+
+        // Main cycle
+        self.reg_shift_rd.process_cycle();
+        self.reg_shift_rs1.process_cycle();
+        self.reg_shift_rs2.process_cycle();
+
+        self.rf.process_cycle();
+        self.sign_extend.process_cycle();
+    }
+}
+
+/*
+Processor -- ID/EX pipeline registers
+*/
+
+pub struct IDEXPipelineRegisters {
     /// IR register for storing current instruction
     pub reg_ir: GuardedRegister,
 
@@ -195,122 +297,94 @@ pub struct IDStage {
     pub reg_imm_j: GuardedRegister,
 }
 
-impl IDStage {
-    pub fn new(port_collection: Rc<RefCell<PortCollection>>, if_stage: &IFStage) -> Self {
-        // Sign extension unit used for exracting and assembling immediate values from instructions
-        let sign_extend = ImmSignExtender::new(
-            port_collection.clone(),
-            if_stage.reg_ir.output_port,
-            String::from("id_imm"),
-        );
+impl Component for IDEXPipelineRegisters {
+    fn process_cycle(&mut self) {
+        // Process all registers
+        self.reg_ir.process_cycle();
+        self.reg_npc.process_cycle();
+        self.reg_rd.process_cycle();
+        self.reg_ra.process_cycle();
+        self.reg_rb.process_cycle();
+        self.reg_imm_i.process_cycle();
+        self.reg_imm_s.process_cycle();
+        self.reg_imm_b.process_cycle();
+        self.reg_imm_u.process_cycle();
+        self.reg_imm_j.process_cycle();
+    }
+}
 
-        // Registers used for extracting register numbers from instruction
-        let reg_shift_rs1 = BitSelectionRegister::<15, 5>::new(
-            port_collection.clone(),
-            if_stage.reg_ir.output_port,
-            String::from("id_reg_shift_rs1"),
-        );
-        let reg_shift_rs2 = BitSelectionRegister::<20, 5>::new(
-            port_collection.clone(),
-            if_stage.reg_ir.output_port,
-            String::from("id_reg_shift_rs2"),
-        );
-        let reg_shift_rd = BitSelectionRegister::<7, 5>::new(
-            port_collection.clone(),
-            if_stage.reg_ir.output_port,
-            String::from("id_reg_shift_rsd"),
-        );
-
-        // Register file
-        let mut rf = RegisterFile::<32>::new(
-            port_collection.clone(),
-            reg_shift_rs1.output_port,
-            reg_shift_rs2.output_port,
-            PORT_NULL_ID, // Originates from WB stage
-            PORT_NULL_ID, // Originates from WB stage
-            PORT_NULL_ID,
-        );
-
-        // Overwrite input 0 on the output muxes of the register file. Reading x0 should always
-        // return 0, which we will read from a constant register.
-        let reg_c_x0 =
-            ConstantRegister::new(port_collection.clone(), 0, String::from("id_reg_c_x0"));
-
-        rf.mux_out_a.inputs[0] = reg_c_x0.output_port;
-        rf.mux_out_b.inputs[0] = reg_c_x0.output_port;
-
+impl IDEXPipelineRegisters {
+    pub fn new(
+        port_collection: Rc<RefCell<PortCollection>>,
+        id_stage: &IDStage,
+        if_id_pipeline_regs: &IFIDPipelineRegisters,
+    ) -> Self {
         // Pipeline registers (still need connection to interlock unit)
+        let reg_ir = GuardedRegister::new(
+            port_collection.clone(),
+            if_id_pipeline_regs.reg_ir.output_port,
+            PORT_NULL_ID,
+            String::from("IDEX_ir"),
+        );
+
         let reg_npc = GuardedRegister::new(
             port_collection.clone(),
-            if_stage.reg_npc.output_port,
+            if_id_pipeline_regs.reg_npc.output_port,
             PORT_NULL_ID,
-            String::from("id_reg_npc"),
+            String::from("IDEX_npc"),
         );
 
         let reg_ra = GuardedRegister::new(
             port_collection.clone(),
-            rf.out_a,
+            id_stage.rf.out_a,
             PORT_NULL_ID,
-            String::from("id_reg_ra"),
+            String::from("IDEX_ra"),
         );
         let reg_rb = GuardedRegister::new(
             port_collection.clone(),
-            rf.out_b,
+            id_stage.rf.out_b,
             PORT_NULL_ID,
-            String::from("id_reg_rb"),
+            String::from("IDEX_rb"),
+        );
+        let reg_rd = GuardedRegister::new(
+            port_collection.clone(),
+            id_stage.reg_shift_rd.output_port,
+            PORT_NULL_ID,
+            String::from("IDEX_rd"),
         );
 
         let reg_imm_i = GuardedRegister::new(
             port_collection.clone(),
-            sign_extend.out_i_type,
+            id_stage.sign_extend.out_i_type,
             PORT_NULL_ID,
-            String::from("id_reg_imm_i"),
+            String::from("IDEX_imm_i"),
         );
         let reg_imm_s = GuardedRegister::new(
             port_collection.clone(),
-            sign_extend.out_s_type,
+            id_stage.sign_extend.out_s_type,
             PORT_NULL_ID,
-            String::from("id_reg_imm_s"),
+            String::from("IDEX_imm_s"),
         );
         let reg_imm_b = GuardedRegister::new(
             port_collection.clone(),
-            sign_extend.out_b_type,
+            id_stage.sign_extend.out_b_type,
             PORT_NULL_ID,
-            String::from("id_reg_imm_b"),
+            String::from("IDEX_imm_b"),
         );
         let reg_imm_u = GuardedRegister::new(
             port_collection.clone(),
-            sign_extend.out_u_type,
+            id_stage.sign_extend.out_u_type,
             PORT_NULL_ID,
-            String::from("id_reg_imm_u"),
+            String::from("IDEX_imm_u"),
         );
         let reg_imm_j = GuardedRegister::new(
             port_collection.clone(),
-            sign_extend.out_j_type,
+            id_stage.sign_extend.out_j_type,
             PORT_NULL_ID,
-            String::from("id_reg_imm_j"),
-        );
-
-        let reg_rd = GuardedRegister::new(
-            port_collection.clone(),
-            reg_shift_rd.output_port,
-            PORT_NULL_ID,
-            String::from("id_reg_rd"),
-        );
-        let reg_ir = GuardedRegister::new(
-            port_collection.clone(),
-            if_stage.reg_ir.output_port,
-            PORT_NULL_ID,
-            String::from("id_ir"),
+            String::from("IDEX_imm_j"),
         );
 
         Self {
-            reg_shift_rd,
-            reg_shift_rs1,
-            reg_shift_rs2,
-            reg_c_x0,
-            rf,
-            sign_extend,
             reg_ir,
             reg_npc,
             reg_rd,
@@ -336,33 +410,6 @@ impl IDStage {
         self.reg_imm_b.input_enable = iu_out;
         self.reg_imm_u.input_enable = iu_out;
         self.reg_imm_j.input_enable = iu_out;
-    }
-}
-
-impl Component for IDStage {
-    fn process_cycle(&mut self) {
-        // Constants
-        self.reg_c_x0.process_cycle();
-
-        // Main cycle
-        self.reg_shift_rd.process_cycle();
-        self.reg_shift_rs1.process_cycle();
-        self.reg_shift_rs2.process_cycle();
-
-        self.rf.process_cycle();
-        self.sign_extend.process_cycle();
-
-        // Pipeline registers
-        self.reg_ir.process_cycle();
-        self.reg_npc.process_cycle();
-        self.reg_rd.process_cycle();
-        self.reg_ra.process_cycle();
-        self.reg_rb.process_cycle();
-        self.reg_imm_i.process_cycle();
-        self.reg_imm_s.process_cycle();
-        self.reg_imm_b.process_cycle();
-        self.reg_imm_u.process_cycle();
-        self.reg_imm_j.process_cycle();
     }
 }
 
@@ -430,22 +477,9 @@ pub struct EXStage {
     pub alu: ALU,
 
     /*
-    Pipeline Registers
-     */
-    /// IR register for storing current instruction
-    pub reg_ir: Register,
-
-    /// Stores the evaluation of the branch condition
-    pub reg_bt: Register,
-
-    /// Stores the result coming from the ALU
-    pub reg_alu: Register,
-
-    /// Stores the rb value
-    pub reg_rb: Register,
-
-    /// Stores the destination register
-    pub reg_rd: Register,
+    Save the PortID of the instruction register in the ID/EX pipeline registers
+    */
+    pub reg_ir_id: PortID,
 
     /*
     Pointer to port collection
@@ -469,7 +503,10 @@ impl EXStage {
     const MUX_BT_REJECT: Word = 0;
     const MUX_BT_BRANCH: Word = 1;
 
-    pub fn new(port_collection: Rc<RefCell<PortCollection>>, id_stage: &IDStage) -> Self {
+    pub fn new(
+        port_collection: Rc<RefCell<PortCollection>>,
+        id_ex_pipeline_regs: &IDEXPipelineRegisters,
+    ) -> Self {
         let ctrl_reg_imm_select = ConstantRegister::new(
             port_collection.clone(),
             0,
@@ -511,11 +548,11 @@ impl EXStage {
         let mux_imm_select = Mux::<5>::new(
             port_collection.clone(),
             &[
-                id_stage.reg_imm_i.output_port,
-                id_stage.reg_imm_s.output_port,
-                id_stage.reg_imm_b.output_port,
-                id_stage.reg_imm_u.output_port,
-                id_stage.reg_imm_j.output_port,
+                id_ex_pipeline_regs.reg_imm_i.output_port,
+                id_ex_pipeline_regs.reg_imm_s.output_port,
+                id_ex_pipeline_regs.reg_imm_b.output_port,
+                id_ex_pipeline_regs.reg_imm_u.output_port,
+                id_ex_pipeline_regs.reg_imm_j.output_port,
             ],
             ctrl_reg_imm_select.output_port,
             String::from("ex_mux_imm_select"),
@@ -523,14 +560,20 @@ impl EXStage {
 
         let mux_ra_select = Mux::<2>::new(
             port_collection.clone(),
-            &[id_stage.reg_npc.output_port, id_stage.reg_ra.output_port],
+            &[
+                id_ex_pipeline_regs.reg_npc.output_port,
+                id_ex_pipeline_regs.reg_ra.output_port,
+            ],
             ctrl_reg_ra_select.output_port,
             String::from("ex_mux_ra_select"),
         );
 
         let mux_rb_select = Mux::<2>::new(
             port_collection.clone(),
-            &[id_stage.reg_rb.output_port, mux_imm_select.output_port],
+            &[
+                id_ex_pipeline_regs.reg_rb.output_port,
+                mux_imm_select.output_port,
+            ],
             ctrl_reg_rb_select.output_port,
             String::from("ex_mux_rb_select"),
         );
@@ -545,8 +588,8 @@ impl EXStage {
 
         let comp = Comparator::new(
             port_collection.clone(),
-            id_stage.reg_ra.output_port,
-            id_stage.reg_rb.output_port,
+            id_ex_pipeline_regs.reg_ra.output_port,
+            id_ex_pipeline_regs.reg_rb.output_port,
             ctrl_reg_comp_mode.output_port,
             String::from("ex_comp"),
         );
@@ -571,32 +614,7 @@ impl EXStage {
             String::from("ex_mux_branch_taken"),
         );
 
-        // Pipeline registers
-        let reg_bt = Register::new(
-            port_collection.clone(),
-            mux_branch_taken.output_port,
-            String::from("ex_reg_bt"),
-        );
-        let reg_alu = Register::new(
-            port_collection.clone(),
-            alu.output_port,
-            String::from("ex_reg_alu"),
-        );
-        let reg_rb = Register::new(
-            port_collection.clone(),
-            id_stage.reg_rb.output_port,
-            String::from("ex_reg_rb"),
-        );
-        let reg_rd = Register::new(
-            port_collection.clone(),
-            id_stage.reg_rd.output_port,
-            String::from("ex_reg_rd"),
-        );
-        let reg_ir = Register::new(
-            port_collection.clone(),
-            id_stage.reg_ir.output_port,
-            String::from("ex_ir"),
-        );
+        let reg_ir_id = id_ex_pipeline_regs.reg_ir.output_port;
 
         Self {
             ctrl_reg_imm_select,
@@ -614,11 +632,7 @@ impl EXStage {
             comp,
             branch_test,
             alu,
-            reg_ir,
-            reg_bt,
-            reg_alu,
-            reg_rb,
-            reg_rd,
+            reg_ir_id,
             port_collection,
         }
     }
@@ -772,14 +786,8 @@ impl Component for EXStage {
         // Constants
         self.reg_c_reject.process_cycle();
 
-        // Get current instruction
-        self.reg_ir.process_cycle();
-
-        // Set control signals
-        let instruction = self
-            .port_collection
-            .borrow()
-            .get_port_data(self.reg_ir.output_port);
+        // Get current instruction and set control signals
+        let instruction = self.port_collection.borrow().get_port_data(self.reg_ir_id);
         self.set_control_signals(instruction);
 
         // Push control signals
@@ -800,13 +808,81 @@ impl Component for EXStage {
         self.comp.process_cycle();
         self.branch_test.process_cycle();
         self.mux_branch_taken.process_cycle();
+    }
+}
 
-        // Pipeline registers
+/*
+Processor -- IF/ID pipeline registers
+*/
+
+pub struct EXMEMPipelineRegisters {
+    /// IR register for storing current instruction
+    pub reg_ir: Register,
+
+    /// Stores the evaluation of the branch condition
+    pub reg_bt: Register,
+
+    /// Stores the result coming from the ALU
+    pub reg_alu: Register,
+
+    /// Stores the rb value
+    pub reg_rb: Register,
+
+    /// Stores the destination register
+    pub reg_rd: Register,
+}
+
+impl Component for EXMEMPipelineRegisters {
+    fn process_cycle(&mut self) {
+        // Process all registers
+        self.reg_ir.process_cycle();
         self.reg_bt.process_cycle();
         self.reg_bt.process_cycle();
         self.reg_alu.process_cycle();
         self.reg_rd.process_cycle();
         self.reg_rb.process_cycle();
+    }
+}
+
+impl EXMEMPipelineRegisters {
+    pub fn new(
+        port_collection: Rc<RefCell<PortCollection>>,
+        ex_stage: &EXStage,
+        id_ex_pipeline_regs: &IDEXPipelineRegisters,
+    ) -> Self {
+        let reg_bt = Register::new(
+            port_collection.clone(),
+            ex_stage.mux_branch_taken.output_port,
+            String::from("EXMEM_reg_bt"),
+        );
+        let reg_alu = Register::new(
+            port_collection.clone(),
+            ex_stage.alu.output_port,
+            String::from("EXMEM_reg_alu"),
+        );
+        let reg_rb = Register::new(
+            port_collection.clone(),
+            id_ex_pipeline_regs.reg_rb.output_port,
+            String::from("EXMEM_reg_rb"),
+        );
+        let reg_rd = Register::new(
+            port_collection.clone(),
+            id_ex_pipeline_regs.reg_rd.output_port,
+            String::from("EXMEM_reg_rd"),
+        );
+        let reg_ir = Register::new(
+            port_collection.clone(),
+            id_ex_pipeline_regs.reg_ir.output_port,
+            String::from("EXMEM_ir"),
+        );
+
+        Self {
+            reg_ir,
+            reg_bt,
+            reg_alu,
+            reg_rb,
+            reg_rd,
+        }
     }
 }
 
@@ -824,17 +900,10 @@ pub struct MEMStage {
     /// Data memory (read/write)
     pub dmem: RWMemory,
 
-    /// Stores the result from memory fetch
-    pub reg_mem: Register,
-
-    /// Stores the result from the ALU
-    pub reg_alu: Register,
-
-    /// Stores the destination register
-    pub reg_rd: Register,
-
-    /// IR register for storing current instruction
-    pub reg_ir: Register,
+    /*
+    Save the PortID of the instruction register in the ID/EX pipeline registers
+    */
+    pub reg_ir_id: PortID,
 
     /*
     Pointer to port collection
@@ -843,7 +912,10 @@ pub struct MEMStage {
 }
 
 impl MEMStage {
-    pub fn new(port_collection: Rc<RefCell<PortCollection>>, ex_stage: &EXStage) -> Self {
+    pub fn new(
+        port_collection: Rc<RefCell<PortCollection>>,
+        ex_mem_pipeline_regs: &EXMEMPipelineRegisters,
+    ) -> Self {
         // Control registers
         let ctrl_reg_write_enable = ConstantRegister::new(
             port_collection.clone(),
@@ -859,43 +931,20 @@ impl MEMStage {
         // Data memory
         let dmem = RWMemory::new(
             port_collection.clone(),
-            ex_stage.reg_alu.output_port,
+            ex_mem_pipeline_regs.reg_alu.output_port,
             ctrl_reg_len_mode.output_port,
-            ex_stage.reg_rb.output_port,
+            ex_mem_pipeline_regs.reg_rb.output_port,
             ctrl_reg_write_enable.output_port,
             String::from("mem_dmem"),
         );
 
-        // Pipeline registers
-        let reg_mem = Register::new(
-            port_collection.clone(),
-            dmem.output_port,
-            String::from("mem_reg_mem"),
-        );
-        let reg_alu = Register::new(
-            port_collection.clone(),
-            ex_stage.reg_alu.output_port,
-            String::from("mem_reg_alu"),
-        );
-        let reg_rd = Register::new(
-            port_collection.clone(),
-            ex_stage.reg_rd.output_port,
-            String::from("mem_reg_rd"),
-        );
-        let reg_ir = Register::new(
-            port_collection.clone(),
-            ex_stage.reg_ir.output_port,
-            String::from("mem_ir"),
-        );
+        let reg_ir_id = ex_mem_pipeline_regs.reg_ir.output_port;
 
         Self {
             ctrl_reg_write_enable,
             ctrl_reg_len_mode,
             dmem,
-            reg_mem,
-            reg_alu,
-            reg_rd,
-            reg_ir,
+            reg_ir_id,
             port_collection,
         }
     }
@@ -929,14 +978,8 @@ impl MEMStage {
 
 impl Component for MEMStage {
     fn process_cycle(&mut self) {
-        // Get current instruction
-        self.reg_ir.process_cycle();
-
-        // Set control signals
-        let instruction = self
-            .port_collection
-            .borrow()
-            .get_port_data(self.reg_ir.output_port);
+        // Get current instruction and set control signals
+        let instruction = self.port_collection.borrow().get_port_data(self.reg_ir_id);
         self.set_control_signals(instruction);
 
         // Push control signals
@@ -945,11 +988,70 @@ impl Component for MEMStage {
 
         // Main cycle
         self.dmem.process_cycle();
+    }
+}
 
-        // Pipeline register
+/*
+Processor -- MEM/WB pipeline registers
+*/
+
+pub struct MEMWBPipelineRegisters {
+    /// Stores the result from memory fetch
+    pub reg_mem: Register,
+
+    /// Stores the result from the ALU
+    pub reg_alu: Register,
+
+    /// Stores the destination register
+    pub reg_rd: Register,
+
+    /// IR register for storing current instruction
+    pub reg_ir: Register,
+}
+
+impl Component for MEMWBPipelineRegisters {
+    fn process_cycle(&mut self) {
+        // Process all registers
+        self.reg_ir.process_cycle();
         self.reg_alu.process_cycle();
         self.reg_mem.process_cycle();
         self.reg_rd.process_cycle();
+    }
+}
+
+impl MEMWBPipelineRegisters {
+    pub fn new(
+        port_collection: Rc<RefCell<PortCollection>>,
+        mem_stage: &MEMStage,
+        ex_mem_pipeline_regs: &EXMEMPipelineRegisters,
+    ) -> Self {
+        let reg_mem = Register::new(
+            port_collection.clone(),
+            mem_stage.dmem.output_port,
+            String::from("MEMWB_reg_mem"),
+        );
+        let reg_alu = Register::new(
+            port_collection.clone(),
+            ex_mem_pipeline_regs.reg_alu.output_port,
+            String::from("MEMWB_reg_alu"),
+        );
+        let reg_rd = Register::new(
+            port_collection.clone(),
+            ex_mem_pipeline_regs.reg_rd.output_port,
+            String::from("MEMWB_reg_rd"),
+        );
+        let reg_ir = Register::new(
+            port_collection.clone(),
+            ex_mem_pipeline_regs.reg_ir.output_port,
+            String::from("MEMWB_ir"),
+        );
+
+        Self {
+            reg_mem,
+            reg_alu,
+            reg_rd,
+            reg_ir,
+        }
     }
 }
 
@@ -970,8 +1072,8 @@ pub struct WBStage {
     /// Holds the destination register of the write back
     pub reg_rd: Register,
 
-    /// IR register for storing current instruction
-    pub reg_ir: Register,
+    /// Save the PortID of the instruction register in the ID/EX pipeline registers
+    pub reg_ir_id: PortID,
 
     /// Pointer to port collection
     pub port_collection: Rc<RefCell<PortCollection>>,
@@ -981,7 +1083,10 @@ impl WBStage {
     pub const MUX_VALUE_MEM: Word = 0;
     pub const MUX_VALUE_ALU: Word = 1;
 
-    pub fn new(port_collection: Rc<RefCell<PortCollection>>, mem_stage: &MEMStage) -> Self {
+    pub fn new(
+        port_collection: Rc<RefCell<PortCollection>>,
+        mem_wb_pipeline_regs: &MEMWBPipelineRegisters,
+    ) -> Self {
         let ctrl_reg_value_select = ConstantRegister::new(
             port_collection.clone(),
             0,
@@ -995,28 +1100,28 @@ impl WBStage {
 
         let mux_value = Mux::<2>::new(
             port_collection.clone(),
-            &[mem_stage.reg_mem.output_port, mem_stage.reg_alu.output_port],
+            &[
+                mem_wb_pipeline_regs.reg_mem.output_port,
+                mem_wb_pipeline_regs.reg_alu.output_port,
+            ],
             ctrl_reg_value_select.output_port,
             String::from("wb_mux_value"),
         );
 
         let reg_rd = Register::new(
             port_collection.clone(),
-            mem_stage.reg_rd.output_port,
+            mem_wb_pipeline_regs.reg_rd.output_port,
             String::from("wb_rd"),
         );
-        let reg_ir = Register::new(
-            port_collection.clone(),
-            mem_stage.reg_ir.output_port,
-            String::from("wb_ir"),
-        );
+
+        let reg_ir_id = mem_wb_pipeline_regs.reg_ir.output_port;
 
         Self {
             ctrl_reg_value_select,
             ctrl_reg_write_enable,
             mux_value,
             reg_rd,
-            reg_ir,
+            reg_ir_id,
             port_collection,
         }
     }
@@ -1055,14 +1160,8 @@ impl WBStage {
 
 impl Component for WBStage {
     fn process_cycle(&mut self) {
-        // Get current instruction
-        self.reg_ir.process_cycle();
-
-        // Set control signals
-        let instruction = self
-            .port_collection
-            .borrow()
-            .get_port_data(self.reg_ir.output_port);
+        // Get current instruction and set control signals
+        let instruction = self.port_collection.borrow().get_port_data(self.reg_ir_id);
         self.set_control_signals(instruction);
 
         // Push control signals
@@ -1088,6 +1187,11 @@ pub struct Processor {
     pub mem_stage: MEMStage,
     pub wb_stage: WBStage,
 
+    pub if_id_pipeline_regs: IFIDPipelineRegisters,
+    pub id_ex_pipeline_regs: IDEXPipelineRegisters,
+    pub ex_mem_pipeline_regs: EXMEMPipelineRegisters,
+    pub mem_wb_pipeline_regs: MEMWBPipelineRegisters,
+
     pub interlock_unit: InterlockUnit,
 }
 
@@ -1096,22 +1200,34 @@ impl Processor {
         let port_collection = Rc::new(RefCell::new(PortCollection::new()));
 
         let mut if_stage = IFStage::new(port_collection.clone());
-        let mut id_stage = IDStage::new(port_collection.clone(), &if_stage);
-        let ex_stage = EXStage::new(port_collection.clone(), &id_stage);
-        let mem_stage = MEMStage::new(port_collection.clone(), &ex_stage);
-        let wb_stage = WBStage::new(port_collection.clone(), &mem_stage);
+        let mut if_id_pipeline_regs =
+            IFIDPipelineRegisters::new(port_collection.clone(), &if_stage);
+
+        let mut id_stage = IDStage::new(port_collection.clone(), &if_id_pipeline_regs);
+        let mut id_ex_pipeline_regs =
+            IDEXPipelineRegisters::new(port_collection.clone(), &id_stage, &if_id_pipeline_regs);
+
+        let ex_stage = EXStage::new(port_collection.clone(), &id_ex_pipeline_regs);
+        let ex_mem_pipeline_regs =
+            EXMEMPipelineRegisters::new(port_collection.clone(), &ex_stage, &id_ex_pipeline_regs);
+
+        let mem_stage = MEMStage::new(port_collection.clone(), &ex_mem_pipeline_regs);
+        let mem_wb_pipeline_regs =
+            MEMWBPipelineRegisters::new(port_collection.clone(), &mem_stage, &ex_mem_pipeline_regs);
+
+        let wb_stage = WBStage::new(port_collection.clone(), &mem_wb_pipeline_regs);
 
         let interlock_unit = InterlockUnit::new(
             port_collection.clone(),
-            if_stage.reg_ir.output_port,
-            id_stage.reg_ir.output_port,
-            ex_stage.reg_ir.output_port,
+            if_id_pipeline_regs.reg_ir.output_port,
+            id_ex_pipeline_regs.reg_ir.output_port,
+            ex_mem_pipeline_regs.reg_ir.output_port,
             String::from("IU"),
         );
 
         // Connect Branch
-        if_stage.mux.inputs[1] = ex_stage.reg_alu.output_port;
-        if_stage.mux.selection_input = ex_stage.reg_bt.output_port;
+        if_stage.mux.inputs[1] = ex_mem_pipeline_regs.reg_alu.output_port;
+        if_stage.mux.selection_input = ex_mem_pipeline_regs.reg_bt.output_port;
 
         // Connect Write back
         id_stage.rf.set_write_inputs(
@@ -1122,24 +1238,22 @@ impl Processor {
 
         // Connect interlock_unit
         if_stage.connect_interlock_unit(interlock_unit.out_not_stall);
-        id_stage.connect_interlock_unit(interlock_unit.out_not_stall);
+        if_id_pipeline_regs.connect_interlock_unit(interlock_unit.out_not_stall);
+        id_ex_pipeline_regs.connect_interlock_unit(interlock_unit.out_not_stall);
 
         // Initialize instruction registers with NOP
         port_collection
             .borrow_mut()
-            .set_port_data(if_stage.reg_ir.output_port, NOP);
+            .set_port_data(if_id_pipeline_regs.reg_ir.output_port, NOP);
         port_collection
             .borrow_mut()
-            .set_port_data(id_stage.reg_ir.output_port, NOP);
+            .set_port_data(id_ex_pipeline_regs.reg_ir.output_port, NOP);
         port_collection
             .borrow_mut()
-            .set_port_data(ex_stage.reg_ir.output_port, NOP);
+            .set_port_data(ex_mem_pipeline_regs.reg_ir.output_port, NOP);
         port_collection
             .borrow_mut()
-            .set_port_data(mem_stage.reg_ir.output_port, NOP);
-        port_collection
-            .borrow_mut()
-            .set_port_data(wb_stage.reg_ir.output_port, NOP);
+            .set_port_data(mem_wb_pipeline_regs.reg_ir.output_port, NOP);
 
         Self {
             port_collection,
@@ -1148,6 +1262,10 @@ impl Processor {
             ex_stage,
             mem_stage,
             wb_stage,
+            if_id_pipeline_regs,
+            id_ex_pipeline_regs,
+            ex_mem_pipeline_regs,
+            mem_wb_pipeline_regs,
             interlock_unit,
         }
     }
@@ -1175,22 +1293,22 @@ impl Processor {
         self.get_current_pc() >> 2
     }
 
-    /// Get the address of the instruction that will be entering the IF stage in the coming cycle.
+    /// Get the address of the instruction that will be processed in the IF stage in the coming cycle.
     pub fn get_coming_pc(&self) -> Word {
         let port_collection = self.port_collection.borrow();
 
-        let pc_input = port_collection.get_port_data(self.if_stage.reg_pc.input);
-        let pc_value = port_collection.get_port_data(self.if_stage.reg_pc.output_port);
-        let pc_enable = port_collection.get_port_data(self.if_stage.reg_pc.input_enable);
+        let incoming = port_collection.get_port_data(self.if_stage.reg_pc.input);
+        let current = port_collection.get_port_data(self.if_stage.reg_pc.output_port);
+        let enabled = port_collection.get_port_data(self.if_stage.reg_pc.input_enable);
 
-        if pc_enable != 0 {
-            pc_input
+        if enabled != 0 {
+            incoming
         } else {
-            pc_value
+            incoming
         }
     }
 
-    /// Get the index of the instruction that will be entering the IF stage in the coming cycle.
+    /// Get the index of the instruction that will be processed in the IF stage in the coming cycle.
     pub fn get_coming_instruction_idx(&self) -> Word {
         self.get_coming_pc() >> 2
     }
@@ -1214,16 +1332,28 @@ impl Component for Processor {
 
         // Update stages
         self.wb_stage.process_cycle();
-        self.mem_stage.process_cycle();
-        self.ex_stage.process_cycle();
-        self.id_stage.process_cycle();
         self.if_stage.process_cycle();
+        self.id_stage.process_cycle();
+        self.ex_stage.process_cycle();
+        self.mem_stage.process_cycle();
+
+        // Cache stage results in pipeline registers
+        self.mem_wb_pipeline_regs.process_cycle();
+        self.ex_mem_pipeline_regs.process_cycle();
+        self.id_ex_pipeline_regs.process_cycle();
+        self.if_id_pipeline_regs.process_cycle();
+
+        // NOTE: The IF-stage mux takes branch-related inputs from the EX stage. These are updated after the IF
+        // stage has completed its cycle. An extra update of the mux is required, such that the CPU is not
+        // left in an invalid state.
+        self.if_stage.cycle_mux();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assembler;
 
     #[test]
     pub fn test_processor() {

@@ -14,3 +14,15 @@ loop:
 end:
     MV x4 x1    ; Store result in x4
     MVI x31 88  ; Exit
+
+
+start:
+	NOP
+	NOP
+jmp:
+	MVI x1 10
+	NOP
+	NOP
+	BLT x0 x1 jmp
+	NOP
+	NOP
