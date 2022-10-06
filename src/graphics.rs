@@ -3,7 +3,7 @@ use crate::assembler::Program;
 use crate::components::Component;
 use crate::cpu::Processor;
 use eframe::egui;
-use eframe::egui::{Color32, Context, ScrollArea};
+use eframe::egui::{Context, ScrollArea};
 
 #[derive(Copy, Clone, PartialEq)]
 pub enum Tab {
@@ -170,9 +170,6 @@ impl RunEnvironment {
                     .show(ui, |ui| {
                         // TODO: use the pre-built lines from the program here
                         for (idx, line) in program.raw_text().lines().into_iter().enumerate() {
-                            ui.monospace(idx.to_string());
-                            ui.add(egui::Separator::default().vertical());
-
                             // Print program counters
 
                             ui.monospace(if idx == current_program_line_if {
@@ -210,7 +207,11 @@ impl RunEnvironment {
                             });
                             ui.add(egui::Separator::default().vertical());
 
-                            ui.monospace(line);
+                            ui.monospace(idx.to_string());
+                            ui.add(egui::Separator::default().vertical());
+
+                            ui.label(crate::code_highlighting::highlight_code(line, 13.0));
+
                             ui.end_row();
                         }
                     });
@@ -258,94 +259,6 @@ impl CodeEditor {
         }
     }
 
-    fn is_instruction(word: &str) -> bool {
-        matches!(
-            word,
-            // NOP
-            "NOP" |
-
-            // Moves
-            "MV" | "MVI" |
-
-            // Ops
-            "ADD" | "SLT" | "SLTU" | "AND" | "OR" | "XOR" | "SLL" | "SUB" | "SRL" | "SRA" |
-
-            // OP-IMM
-            "ADDI" | "SLTI" | "SLTIU" | "ANDI" | "ORI" | "XORI" | "SLLI" | "SRLI" | "SRAI" |
-
-            // Branch
-            "BEQ" | "BNE" | "BLT" | "BLTU" | "BGE" | "BGEU" | "BLE" | "BLEU" | "BGT" | "BGTU" |
-
-            // Memory Access
-            "LOAD" | "STORE" |
-
-            // Extension
-            "MUL"
-        )
-    }
-
-    fn is_register(word: &str) -> bool {
-        (word.len() >= 2)
-            && (word.starts_with('x'))
-            && (word[1..].chars().all(|c: char| c.is_numeric()))
-    }
-
-    fn is_literal(word: &str) -> bool {
-        (!word.is_empty()) && (word.chars().all(|c: char| c.is_numeric()))
-    }
-
-    /// Creates a layout job for rendering highlighted code.
-    fn highlight_code(mut code: &str, font_size: f32) -> egui::text::LayoutJob {
-        let mut job = egui::text::LayoutJob::default();
-
-        let font_id = egui::FontId::monospace(font_size);
-
-        let format_normal = egui::TextFormat::simple(font_id.clone(), Color32::WHITE);
-        let format_comment = egui::TextFormat::simple(font_id.clone(), Color32::LIGHT_BLUE);
-        let format_keyword = egui::TextFormat::simple(font_id.clone(), Color32::LIGHT_RED);
-        let format_register = egui::TextFormat::simple(font_id.clone(), Color32::LIGHT_GREEN);
-        let format_literal = egui::TextFormat::simple(font_id.clone(), Color32::KHAKI);
-
-        while !code.is_empty() {
-            if code.starts_with(";") {
-                let end = code.find('\n').unwrap_or(code.len());
-                job.append(&code[..end], 0.0, format_comment.clone());
-                code = &code[end..];
-            } else if code.starts_with(|c: char| c.is_ascii_alphanumeric()) {
-                let end = code[1..]
-                    .find(|c: char| !c.is_ascii_alphanumeric())
-                    .map_or_else(|| code.len(), |i| i + 1);
-
-                let token = &code[..end];
-
-                if Self::is_instruction(token) {
-                    job.append(token, 0.0, format_keyword.clone());
-                } else if Self::is_register(token) {
-                    job.append(token, 0.0, format_register.clone());
-                } else if Self::is_literal(token) {
-                    job.append(token, 0.0, format_literal.clone());
-                } else {
-                    job.append(token, 0.0, format_normal.clone());
-                }
-                code = &code[end..];
-            } else if code.starts_with(|c: char| c.is_ascii_whitespace()) {
-                let end = code[1..]
-                    .find(|c: char| !c.is_ascii_whitespace())
-                    .map_or_else(|| code.len(), |i| i + 1);
-                job.append(&code[..end], 0.0, format_normal.clone());
-                code = &code[end..];
-            } else {
-                let end = code[1..]
-                    .find(|c: char| c.is_ascii_whitespace())
-                    .map_or_else(|| code.len(), |i| i + 1);
-                job.append(&code[..end], 0.0, format_normal.clone());
-                code = &code[end..];
-            }
-        }
-
-        return job;
-    }
-
     pub fn ui(&mut self, ctx: &Context, on_program_load: impl FnOnce(Program)) {
         egui::TopBottomPanel::top("controls").show(&ctx, |ui| {
             ui.horizontal(|ui| {
@@ -386,7 +299,7 @@ impl CodeEditor {
                 // TODO: cache highlighting result
                 let mut layouter = |ui: &egui::Ui, string: &str, wrap_width: f32| {
                     let mut layout_job: egui::text::LayoutJob =
-                        Self::highlight_code(string, self.font_size);
+                        crate::code_highlighting::highlight_code(string, self.font_size);
                     layout_job.wrap.max_width = wrap_width;
                     ui.fonts().layout_job(layout_job)
                 };
