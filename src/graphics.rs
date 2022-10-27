@@ -142,75 +142,60 @@ impl RunEnvironment {
     }
 
     pub fn build_program_table(&self, ui: &mut egui::Ui, program: &Program) {
+        let program_lines = program.get_lines_as_slices();
+        let num_lines = program_lines.len();
+        let text_style = egui::TextStyle::Monospace;
+        let row_height = ui.text_style_height(&text_style);
+
         egui::ScrollArea::vertical()
             .id_source("code")
-            .show(ui, |ui| {
+            .max_width(ui.available_width())
+            .show_rows(ui, row_height, num_lines, |ui, line_range| {
                 let run_state = self.run_state.as_ref().unwrap();
 
                 // Resolve program counters to lines
-                let current_program_line_if = program
-                    .instruction_to_line(run_state.pc_if)
-                    .unwrap_or(usize::MAX);
-                let current_program_line_id = program
-                    .instruction_to_line(run_state.pc_id)
-                    .unwrap_or(usize::MAX);
-                let current_program_line_ex = program
-                    .instruction_to_line(run_state.pc_ex)
-                    .unwrap_or(usize::MAX);
-                let current_program_line_mem = program
-                    .instruction_to_line(run_state.pc_mem)
-                    .unwrap_or(usize::MAX);
                 let current_program_line_wb = program
                     .instruction_to_line(run_state.pc_wb)
                     .unwrap_or(usize::MAX);
 
                 egui::Grid::new("code_lines")
                     .striped(true)
-                    .min_col_width(0.0)
+                    .num_columns(3)
                     .show(ui, |ui| {
-                        // TODO: use the pre-built lines from the program here
-                        for (idx, line) in program.raw_text().lines().into_iter().enumerate() {
+                        ui.style_mut().wrap = Some(false);
+                        ui.style_mut().spacing.item_spacing.x = 6.0;
+
+                        for (idx, line) in program_lines[line_range.clone()].into_iter().enumerate()
+                        {
                             // Print program counters
+                            let idx = idx + line_range.start;
 
-                            ui.monospace(if idx == current_program_line_if {
-                                ">"
-                            } else {
-                                " "
+                            // Program pointer
+                            ui.horizontal(|ui| {
+                                ui.monospace(if idx == current_program_line_wb {
+                                    ">"
+                                } else {
+                                    " "
+                                });
+                                ui.separator();
                             });
-                            ui.add(egui::Separator::default().vertical());
 
-                            ui.monospace(if idx == current_program_line_id {
-                                ">"
-                            } else {
-                                " "
+                            // Line number
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.add(egui::Separator::default().vertical());
+                                    ui.monospace(idx.to_string());
+                                },
+                            );
+
+                            // Code line
+                            ui.horizontal(|ui| {
+                                ui.label(crate::code_highlighting::highlight_code(line, 13.0));
+
+                                // Fill the complete horiziontal space
+                                ui.allocate_space(ui.available_size());
                             });
-                            ui.add(egui::Separator::default().vertical());
-
-                            ui.monospace(if idx == current_program_line_ex {
-                                ">"
-                            } else {
-                                " "
-                            });
-                            ui.add(egui::Separator::default().vertical());
-
-                            ui.monospace(if idx == current_program_line_mem {
-                                ">"
-                            } else {
-                                " "
-                            });
-                            ui.add(egui::Separator::default().vertical());
-
-                            ui.monospace(if idx == current_program_line_wb {
-                                ">"
-                            } else {
-                                " "
-                            });
-                            ui.add(egui::Separator::default().vertical());
-
-                            ui.monospace(idx.to_string());
-                            ui.add(egui::Separator::default().vertical());
-
-                            ui.label(crate::code_highlighting::highlight_code(line, 13.0));
 
                             ui.end_row();
                         }
@@ -219,12 +204,21 @@ impl RunEnvironment {
     }
 
     pub fn ui(&mut self, ctx: &Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Loaded Program");
+        egui::SidePanel::right("state").show(ctx, |ui| {
+            ui.heading("Register State");
             ui.separator();
+            self.build_register_table(ui);
+        });
 
-            if let Some(program) = &self.program {
-                if ui.button("Process Cycle").clicked() {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::TopBottomPanel::top("Control Panel").show_inside(ui, |ui| {
+                let is_program_loaded = self.program.is_some();
+
+                if ui
+                    .add_enabled(is_program_loaded, egui::Button::new("▶"))
+                    .on_hover_text("Process Cycle")
+                    .clicked()
+                {
                     self.cpu.process_cycle();
 
                     if let Some(run_state) = &mut self.run_state {
@@ -232,14 +226,14 @@ impl RunEnvironment {
                         run_state.pc_if = self.cpu.get_coming_instruction_idx() as usize;
                     }
                 }
+            });
+
+            ui.heading("Loaded Program");
+            ui.separator();
+
+            if let Some(program) = &self.program {
                 self.build_program_table(ui, program);
             }
-        });
-
-        egui::SidePanel::right("state").show(ctx, |ui| {
-            ui.heading("Register State");
-            ui.separator();
-            self.build_register_table(ui);
         });
     }
 }

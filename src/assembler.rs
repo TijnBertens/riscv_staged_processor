@@ -1256,6 +1256,13 @@ impl Program {
         &self.raw_text[self.raw_text_lines[idx].clone()]
     }
 
+    pub fn get_lines_as_slices(&self) -> Vec<&str> {
+        self.raw_text_lines
+            .iter()
+            .map(|r| &self.raw_text[r.clone()])
+            .collect()
+    }
+
     pub fn instruction_to_line(&self, instr_idx: usize) -> Option<usize> {
         self.instruction_index.get(instr_idx).map(|i| *i)
     }
