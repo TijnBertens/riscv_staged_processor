@@ -11,11 +11,17 @@ pub struct Port {
     pub current_data: Word
 }
 
+/// Represents a collection of (output) ports of components on a circuit. Each port holds a single data word.
+/// 
+/// Once a port is registerd in the collection, it is never deleted. A unique ID is given out whenever a new port
+/// is regstered. This ID can be stored as a reference to a port, without requiring an explicit (mutable) reference to the port data.
+/// This allows circuits to create a cyclical network of ports without running into issues with mutability.
 pub struct PortCollection {
     ports: Vec<Port>
 }
 
 impl PortCollection {
+    /// Creates and emty PortCollection.
     pub fn new() -> Self {
         Self {
             ports: vec![
@@ -27,6 +33,7 @@ impl PortCollection {
         }
     }
 
+    /// Adds a port to the collection and returns an ID to identify it.
     pub fn register_port(&mut self, value: Word, name: String) -> PortID {
         self.ports.push(
             Port {

@@ -1,6 +1,5 @@
 use crate::assembler;
 use crate::assembler::Program;
-use crate::components::Component;
 use crate::cpu::Processor;
 use eframe::egui;
 use eframe::egui::{Context, ScrollArea};
@@ -325,6 +324,7 @@ pub fn run_gui() {
 }
 
 mod component_graphics {
+    use crate::circuit::PortCollection;
     use crate::components::{ConstantRegister, Mux, RMemory, Register, RegisterFile};
     use eframe::egui;
     use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Shape, Stroke, Vec2};
@@ -371,7 +371,7 @@ mod component_graphics {
             }
         }
 
-        pub fn draw(&self, painter: &mut Painter) {
+        pub fn draw(&self, painter: &mut Painter, port_collection: &PortCollection) {
             // Draw background
             let background = egui::Shape::Rect(RectShape::filled(
                 egui::Rect::from_center_size(
@@ -393,11 +393,7 @@ mod component_graphics {
 
             draw_text_basic(painter, &self.reg.name, pos_name, 13.0);
 
-            let value = self
-                .reg
-                .port_collection
-                .borrow()
-                .get_port_data(self.reg.output_port);
+            let value = port_collection.get_port_data(self.reg.output_port);
             draw_text_basic(painter, value, pos_val, 13.0);
         }
     }
@@ -427,7 +423,7 @@ mod component_graphics {
             }
         }
 
-        pub fn draw(&self, painter: &mut Painter) {
+        pub fn draw(&self, painter: &mut Painter, port_collection: &PortCollection) {
             // Draw background
             let background = egui::Shape::Rect(RectShape::filled(
                 egui::Rect::from_center_size(
@@ -450,11 +446,7 @@ mod component_graphics {
 
             draw_text_basic(painter, &self.reg.name, pos_name, 13.0);
 
-            let value = self
-                .reg
-                .port_collection
-                .borrow()
-                .get_port_data(self.reg.output_port);
+            let value = port_collection.get_port_data(self.reg.output_port);
             draw_text_basic(painter, value, pos_val, 13.0);
         }
     }
@@ -503,7 +495,7 @@ mod component_graphics {
             }
         }
 
-        pub fn draw(&self, painter: &mut Painter) {
+        pub fn draw(&self, painter: &mut Painter, port_collection: &PortCollection) {
             // Draw background
             let top_left = self.position + 0.5 * Vec2::new(-Self::BG_WIDTH, Self::BG_HEIGHT_IN);
             let bot_left = self.position + 0.5 * Vec2::new(-Self::BG_WIDTH, -Self::BG_HEIGHT_IN);
@@ -519,11 +511,7 @@ mod component_graphics {
             painter.add(background);
 
             // Draw inner connection
-            let selection_idx = self
-                .mux
-                .port_collection
-                .borrow()
-                .get_port_data(self.mux.selection_input);
+            let selection_idx = port_collection.get_port_data(self.mux.selection_input);
 
             let inner_connection = Shape::LineSegment {
                 points: [
@@ -786,6 +774,7 @@ mod tests {
     #[ignore]
     fn test_draw_constant_register() {
         struct TestData {
+            port_collection: PortCollection,
             reg_c: ConstantRegister,
             reg_a: Register,
             reg_s: ConstantRegister,
@@ -794,30 +783,30 @@ mod tests {
             rf: RegisterFile<32>,
         }
 
-        let port_collection = Rc::new(RefCell::new(PortCollection::new()));
+        let mut port_collection = PortCollection::new();
 
-        let reg_c = ConstantRegister::new(port_collection.clone(), 3, String::from("reg_c"));
+        let reg_c = ConstantRegister::new(&mut port_collection, 3, String::from("reg_c"));
         let reg_a = Register::new(
-            port_collection.clone(),
+            &mut port_collection,
             reg_c.output_port,
             String::from("reg_a"),
         );
-        let reg_s = ConstantRegister::new(port_collection.clone(), 1, String::from("reg_s"));
+        let reg_s = ConstantRegister::new(&mut port_collection, 1, String::from("reg_s"));
 
         let mux = Mux::<2>::new(
-            port_collection.clone(),
+            &mut port_collection,
             &[reg_c.output_port, reg_a.output_port],
             reg_s.output_port,
             String::from("mux"),
         );
         let imem = RMemory::new(
-            port_collection.clone(),
+            &mut port_collection,
             mux.output_port,
             PORT_NULL_ID,
             String::from("imem"),
         );
         let rf = RegisterFile::<32>::new(
-            port_collection.clone(),
+            &mut port_collection,
             PORT_NULL_ID,
             PORT_NULL_ID,
             PORT_NULL_ID,
@@ -826,6 +815,7 @@ mod tests {
         );
 
         let data = TestData {
+            port_collection,
             reg_c,
             reg_a,
             reg_s,
@@ -838,17 +828,17 @@ mod tests {
             ui.vertical(|ui| {
                 ui.add(egui::Slider::new(&mut data.reg_c.constant_value, 0..=999));
                 if ui.button("Process Cycle").clicked() {
-                    data.reg_a.process_cycle();
-                    data.reg_s.process_cycle();
-                    data.reg_c.process_cycle();
-                    data.mux.process_cycle();
-                    data.imem.process_cycle();
-                    data.rf.process_cycle();
+                    data.reg_a.process_cycle(&mut data.port_collection);
+                    data.reg_s.process_cycle(&mut data.port_collection);
+                    data.reg_c.process_cycle(&mut data.port_collection);
+                    data.mux.process_cycle(&mut data.port_collection);
+                    data.imem.process_cycle(&mut data.port_collection);
+                    data.rf.process_cycle(&mut data.port_collection);
                 }
 
                 if ui.button("Switch Mux").clicked() {
                     data.reg_s.constant_value ^= 1;
-                    data.reg_s.process_cycle();
+                    data.reg_s.process_cycle(&mut data.port_collection);
                 }
             });
 
@@ -918,10 +908,10 @@ mod tests {
                         None,
                     );
 
-                    reg_c_graphic.draw(&mut painter);
-                    reg_a_graphic.draw(&mut painter);
-                    reg_s_graphic.draw(&mut painter);
-                    mux_graphic.draw(&mut painter);
+                    reg_c_graphic.draw(&mut painter, &data.port_collection);
+                    reg_a_graphic.draw(&mut painter, &data.port_collection);
+                    reg_s_graphic.draw(&mut painter, &data.port_collection);
+                    mux_graphic.draw(&mut painter, &data.port_collection);
                     imem_graphic.draw(&mut painter);
                     rf_graphic.draw(&mut painter);
                 });
