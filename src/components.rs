@@ -590,7 +590,7 @@ impl Component for ALU {
         let in_func = port_collection.get_port_data(self.input_func);
 
         let output_value = match in_func {
-            Self::OP_ADD => { println!("{}, {}", in_as, in_bs); in_a.wrapping_add(in_b) },
+            Self::OP_ADD => { in_a.wrapping_add(in_b) },
             Self::OP_SUB => in_a.wrapping_sub(in_b),
             Self::OP_AND => in_a & in_b,
             Self::OP_OR => in_a | in_b,
