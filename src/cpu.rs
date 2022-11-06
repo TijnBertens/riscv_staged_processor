@@ -136,7 +136,7 @@ impl IFIDPipelineRegisters {
         // Pipeline registers: IR and NPC (still need connection to interlock unit)
         let reg_npc = GuardedRegister::new(
             port_collection,
-            if_stage.mux.output_port,
+            if_stage.addr.output_port,
             PORT_NULL_ID,
             String::from("IFID_npc"),
         );
