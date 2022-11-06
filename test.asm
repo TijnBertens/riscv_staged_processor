@@ -13,7 +13,7 @@ loop:
     NOP
 end:
     MV x4 x1    ; Store result in x4
-    MVI x31 88  ; Exit
+    EXIT  ; Exit
 
 
 start:
@@ -26,3 +26,20 @@ jmp:
 	BLT x0 x1 jmp
 	NOP
 	NOP
+	
+Fibonacci:
+
+start:
+	MVI x1 0		; x1 <- iteration counter
+	MVI x10 10	  ; x10 <- num iterations
+
+	MVI x2 0		; x2 <- f_t-2
+	MVI x3 1		; x3 <- f_t-1
+loop:
+	NOP
+	BLT x1 x10 loop
+	ADD x4 x2 x3	; x4 <- f_t
+	ADDI x1 x1 1	; i++
+	
+end:
+	EXIT

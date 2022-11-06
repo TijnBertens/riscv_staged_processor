@@ -1,6 +1,10 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+
 use crate::assembler;
 use crate::assembler::Program;
-use crate::cpu::Processor;
+use crate::cpu_controller::CPUDebugController;
 use eframe::egui;
 use eframe::egui::{Context, ScrollArea};
 
@@ -53,74 +57,63 @@ impl eframe::App for ProcessorGUI {
     }
 }
 
-#[derive(Debug)]
-pub struct RunState {
-    /// Program counter for IF stage
-    pc_if: usize,
-
-    /// Program counter for ID stage
-    pc_id: usize,
-
-    /// Program counter for EX stage
-    pc_ex: usize,
-
-    /// Program counter for MEM stage
-    pc_mem: usize,
-
-    /// Program counter for WB stage
-    pc_wb: usize,
+pub struct CPUControllerThread {
+    is_killed: Arc<AtomicBool>,
+    thread_handle: JoinHandle<()>,
 }
 
-impl RunState {
-    pub fn new() -> Self {
+impl CPUControllerThread {
+    pub fn start_new(controller: Arc<Mutex<CPUDebugController>>) -> Self {
+        let is_killed = Arc::new(AtomicBool::new(false));
+        
+        let thread_handle = {
+            let is_killed = is_killed.clone();
+            
+            thread::spawn(move || {
+                while is_killed.load(Ordering::SeqCst) != true {
+                    controller.lock().unwrap().tick();
+                }
+            })
+        };
+        
         Self {
-            pc_if: 0,
-            pc_id: 0,
-            pc_ex: 0,
-            pc_mem: 0,
-            pc_wb: 0,
-        }
-    }
-
-    pub fn propagate_pc(&mut self, is_stalled: bool) {
-        self.pc_wb = self.pc_mem;
-        self.pc_mem = self.pc_ex;
-
-        if !is_stalled {
-            self.pc_ex = self.pc_id;
-            self.pc_id = self.pc_if;
+            is_killed,
+            thread_handle
         }
     }
 }
 
 pub struct RunEnvironment {
     program: Option<Program>,
-    cpu: Processor,
-    run_state: Option<RunState>,
+    cpu_controller: Arc<Mutex<CPUDebugController>>,
+    cpu_controller_thread: CPUControllerThread,
 }
 
 impl RunEnvironment {
     pub fn new() -> Self {
+        let cpu_controller = Arc::new(Mutex::new(CPUDebugController::new()));
+        let cpu_controller_thread = CPUControllerThread::start_new(cpu_controller.clone());
+        
         Self {
             program: None,
-            cpu: Processor::new(),
-            run_state: None,
+            cpu_controller,
+            cpu_controller_thread,
         }
     }
 
     pub fn load_program(&mut self, program: Program) {
-        self.cpu = Processor::new();
-        self.cpu.load_program_memory(&program.to_mem());
+        let mut controller = self.cpu_controller.lock().unwrap();
+        controller.load_program(program.clone());
         self.program = Some(program);
-
-        self.run_state = Some(RunState::new());
     }
 
     pub fn build_register_table(&self, ui: &mut egui::Ui) {
+        let controller = self.cpu_controller.lock().unwrap();
+        
         egui::Grid::new("register_state")
             .striped(true)
             .show(ui, |ui| {
-                let register_contents = self.cpu.get_rf_contents();
+                let register_contents = controller.get_cpu().get_rf_contents();
 
                 for y in 0..8 {
                     for x in 0..4 {
@@ -141,6 +134,8 @@ impl RunEnvironment {
     }
 
     pub fn build_program_table(&self, ui: &mut egui::Ui, program: &Program) {
+        let controller = self.cpu_controller.lock().unwrap();
+        
         let program_lines = program.get_lines_as_slices();
         let num_lines = program_lines.len();
         let text_style = egui::TextStyle::Monospace;
@@ -150,11 +145,11 @@ impl RunEnvironment {
             .id_source("code")
             .max_width(ui.available_width())
             .show_rows(ui, row_height, num_lines, |ui, line_range| {
-                let run_state = self.run_state.as_ref().unwrap();
+                let pc_state = controller.get_pc_state();
 
                 // Resolve program counters to lines
                 let current_program_line_wb = program
-                    .instruction_to_line(run_state.pc_wb)
+                    .instruction_to_line(pc_state.get_wb())
                     .unwrap_or(usize::MAX);
 
                 egui::Grid::new("code_lines")
@@ -213,18 +208,29 @@ impl RunEnvironment {
             egui::TopBottomPanel::top("Control Panel").show_inside(ui, |ui| {
                 let is_program_loaded = self.program.is_some();
 
-                if ui
-                    .add_enabled(is_program_loaded, egui::Button::new("▶"))
-                    .on_hover_text("Process Cycle")
-                    .clicked()
-                {
-                    self.cpu.process_cycle();
-
-                    if let Some(run_state) = &mut self.run_state {
-                        run_state.propagate_pc(self.cpu.is_stalled());
-                        run_state.pc_if = self.cpu.get_coming_instruction_idx() as usize;
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(is_program_loaded, egui::Button::new("▶"))
+                        .on_hover_text("Cycle")
+                        .clicked()
+                    {
+                        self.cpu_controller.lock().unwrap().set_exec_mode(crate::cpu_controller::ExecutionMode::SingleCycle);
                     }
-                }
+                    if ui
+                        .add_enabled(is_program_loaded, egui::Button::new("▶"))
+                        .on_hover_text("Step")
+                        .clicked()
+                    {
+                        self.cpu_controller.lock().unwrap().set_exec_mode(crate::cpu_controller::ExecutionMode::SingleStep);
+                    } 
+                    if ui
+                        .add_enabled(is_program_loaded, egui::Button::new("▶"))
+                        .on_hover_text("Complete")
+                        .clicked()
+                    {
+                        self.cpu_controller.lock().unwrap().set_exec_mode(crate::cpu_controller::ExecutionMode::RunTillComplete);
+                    } 
+                });
             });
 
             ui.heading("Loaded Program");

@@ -193,6 +193,11 @@ pub fn encode_instruction_no_labels(tokens: &Vec<&str>) -> Result<Word, String> 
             check_num_params!(tokens, 0);
             build_instruction_i_type(op_code::OP_IMM, func_code_3::ADDI, 0, 0, 0)
         }
+        "EXIT" => {
+            // Compiles to a NOP, relies on software to handle breaking/exiting.
+            check_num_params!(tokens, 0);
+            build_instruction_i_type(op_code::OP_IMM, func_code_3::ADDI, 0, 0, 0)
+        }
 
         /*
         Moves
@@ -593,6 +598,11 @@ pub fn encode_instruction(
             check_num_params!(tokens, 0);
             build_instruction_i_type(op_code::OP_IMM, func_code_3::ADDI, 0, 0, 0)
         }
+        "EXIT" => {
+            // Compiles to a NOP, relies on software to handle breaking/exiting.
+            check_num_params!(tokens, 0);
+            build_instruction_i_type(op_code::OP_IMM, func_code_3::ADDI, 0, 0, 0)
+        }
 
         /*
         Moves
@@ -832,6 +842,13 @@ pub fn encode_instruction(
         /*
         BRANCH
          */
+        "JMP" => {
+            // Shortcut for an unconditional jump instruction. In the real RISC-V ISA, this is implemented using JAL.
+            check_num_params!(tokens, 1);
+            parse_param!(tokens[1] => BRANCH target);
+            validate_and_resolve!(target => offset);
+            build_instruction_b_type(op_code::BRANCH, func_code_3::BEQ, 0, 0, offset)
+        }
         "BEQ" => {
             check_num_params!(tokens, 3);
             parse_param!(tokens[1] => REG src1);
@@ -1000,6 +1017,9 @@ pub struct ExplorationPassResult<'a> {
     /// An array of instructions. A tuple is stored for each instruction, capturing the line number
     /// at which the instruction is defined, together with the text defining the instruction.
     instructions: Vec<(usize, &'a str)>,
+    
+    /// A list containing the addresses of all exit points in the program.
+    exit_points: Vec<usize>
 }
 
 pub struct ExplorationPassError<'a> {
@@ -1054,15 +1074,22 @@ pub fn strip_comment(raw_line: &str) -> &str {
     }
 }
 
+/// Checks whether a given trimmed instruction line (w/o comment) is an exit point.
+pub fn is_exit_point(instr_line: &str) -> bool {
+    instr_line.trim() == "EXIT"
+}
+
 /// Makes an exploratory first pass through raw program text (lines). During this pass:
-/// (1) instructions are identified and located, but not parsed, and
-/// (2) all labels are identified and their corresponding addresses are determined.
+/// (1) instructions are identified and located, but not parsed,
+/// (2) all labels are identified and their corresponding addresses are determined, and
+/// (3) all exit points are identified.
 pub fn parse_exploration_pass<'a>(
     raw_lines: &Vec<&'a str>,
 ) -> Result<ExplorationPassResult<'a>, ExplorationPassError<'a>> {
     // Variables used in the result
     let mut labels: HashMap<&str, usize> = HashMap::new();
     let mut instructions: Vec<(usize, &'a str)> = Vec::new();
+    let mut exit_points: Vec<usize> = Vec::new();
 
     // Variables for bookkeeping
     let mut last_label: Option<(usize, &str)> = None; // (line_number, identifier)
@@ -1113,6 +1140,11 @@ pub fn parse_exploration_pass<'a>(
                 labels.insert(identifier, instruction_counter);
                 last_label = None;
             }
+            
+            // Check for exit points.
+            if is_exit_point(code) {
+                exit_points.push(instruction_counter << 2);
+            }
 
             // Store the instruction and its location
             instructions.push((line_idx, *line));
@@ -1133,9 +1165,11 @@ pub fn parse_exploration_pass<'a>(
     Ok(ExplorationPassResult {
         labels,
         instructions,
+        exit_points,
     })
 }
 
+#[derive(Clone)]
 pub struct Program {
     /// The raw program text.
     raw_text: String,
@@ -1151,6 +1185,9 @@ pub struct Program {
 
     /// Encoded instruction words that make up the program.
     instructions: Vec<Word>,
+    
+    /// A list addresses which should be considered EXIT points.
+    exit_points: Vec<usize>
 }
 
 impl Program {
@@ -1203,6 +1240,8 @@ impl Program {
             .into_iter()
             .map(|(s, l)| (s.to_string(), l))
             .collect();
+            
+        let exit_points = exploration_pass_result.exit_points;
 
         return Ok(Program {
             raw_text_lines: lines_as_ranges,
@@ -1214,6 +1253,7 @@ impl Program {
                 .collect(),
             instructions: encoded_instructions,
             raw_text: text,
+            exit_points
         });
     }
 
@@ -1266,6 +1306,9 @@ impl Program {
     pub fn instruction_to_line(&self, instr_idx: usize) -> Option<usize> {
         self.instruction_index.get(instr_idx).map(|i| *i)
     }
+    
+    pub fn get_exit_points(&self) -> &Vec<usize> {
+        &self.exit_points  }
 }
 
 #[cfg(test)]

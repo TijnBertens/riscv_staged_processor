@@ -6,7 +6,7 @@ fn is_instruction(word: &str) -> bool {
     matches!(
         word,
         // NOP
-        "NOP" |
+        "NOP" | "EXIT" |
 
             // Moves
             "MV" | "MVI" |
@@ -18,7 +18,7 @@ fn is_instruction(word: &str) -> bool {
             "ADDI" | "SLTI" | "SLTIU" | "ANDI" | "ORI" | "XORI" | "SLLI" | "SRLI" | "SRAI" |
 
             // Branch
-            "BEQ" | "BNE" | "BLT" | "BLTU" | "BGE" | "BGEU" | "BLE" | "BLEU" | "BGT" | "BGTU" |
+            "JMP" | "BEQ" | "BNE" | "BLT" | "BLTU" | "BGE" | "BGEU" | "BLE" | "BLEU" | "BGT" | "BGTU" |
 
             // Memory Access
             "LOAD" | "STORE" |
