@@ -161,7 +161,19 @@ impl CPUDebugController {
         self.cpu = Processor::new();
         self.pc_state = PCState::new();
         self.prev_wb_pc = 0;
+        self.execution_mode = ExecutionMode::Paused;
         self.current_program = None;
+    }
+    
+    pub fn reset_cpu_with_program(&mut self) {
+        self.cpu = Processor::new();
+        self.pc_state = PCState::new();
+        self.prev_wb_pc = 0;
+        self.execution_mode = ExecutionMode::Paused;
+        
+        if let Some(program) = &self.current_program {
+            self.cpu.load_program_memory(&program.to_mem());   
+        }
     }
     
     pub fn load_program(&mut self, program: Program) {
@@ -170,8 +182,16 @@ impl CPUDebugController {
         self.current_program = Some(program);
     }
     
+    pub fn is_paused(&self) -> bool {
+        self.execution_mode == ExecutionMode::Paused
+    }
+    
     pub fn is_finished(&self) -> bool {
         self.execution_mode == ExecutionMode::Finished
+    }
+    
+    pub fn is_running(&self) -> bool {
+        !(self.is_paused() || self.is_finished())
     }
     
     pub fn get_cpu(&self) -> &Processor {

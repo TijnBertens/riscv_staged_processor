@@ -197,6 +197,54 @@ impl RunEnvironment {
             });
     }
 
+    pub fn build_control_panel(&self, ui: &mut egui::Ui) {
+        let is_program_loaded = self.program.is_some();
+        let mut controller = self.cpu_controller.lock().unwrap();
+        
+        let is_paused = controller.is_paused();
+        let is_running = controller.is_running();
+        
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(is_paused, egui::Button::new("\u{23F5}"))
+                .on_hover_text("Cycle")
+                .clicked()
+            {
+                controller.set_exec_mode(crate::cpu_controller::ExecutionMode::SingleCycle);
+            }
+            
+            if ui
+                .add_enabled(is_paused, egui::Button::new("\u{23E9}"))
+                .on_hover_text("Step")
+                .clicked()
+            {
+                controller.set_exec_mode(crate::cpu_controller::ExecutionMode::SingleStep);
+            }
+            
+            if !is_running {
+                if ui
+                    .add_enabled(is_paused, egui::Button::new("\u{23ED}"))
+                    .on_hover_text("Complete")
+                    .clicked()
+                {
+                    controller.set_exec_mode(crate::cpu_controller::ExecutionMode::RunTillComplete);
+                }   
+            } else {
+                if ui.button("\u{23F8}").on_hover_text("Pause").clicked() {
+                    controller.set_exec_mode(crate::cpu_controller::ExecutionMode::Paused);
+                }
+            }
+            
+            if ui
+                .add_enabled(is_program_loaded, egui::Button::new("\u{27F2}"))
+                .on_hover_text("Reset")
+                .clicked()
+            {
+                controller.reset_cpu_with_program();
+            }
+        });
+    }
+    
     pub fn ui(&mut self, ctx: &Context) {
         egui::SidePanel::right("state").show(ctx, |ui| {
             ui.heading("Register State");
@@ -206,31 +254,7 @@ impl RunEnvironment {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::TopBottomPanel::top("Control Panel").show_inside(ui, |ui| {
-                let is_program_loaded = self.program.is_some();
-
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(is_program_loaded, egui::Button::new("▶"))
-                        .on_hover_text("Cycle")
-                        .clicked()
-                    {
-                        self.cpu_controller.lock().unwrap().set_exec_mode(crate::cpu_controller::ExecutionMode::SingleCycle);
-                    }
-                    if ui
-                        .add_enabled(is_program_loaded, egui::Button::new("▶"))
-                        .on_hover_text("Step")
-                        .clicked()
-                    {
-                        self.cpu_controller.lock().unwrap().set_exec_mode(crate::cpu_controller::ExecutionMode::SingleStep);
-                    } 
-                    if ui
-                        .add_enabled(is_program_loaded, egui::Button::new("▶"))
-                        .on_hover_text("Complete")
-                        .clicked()
-                    {
-                        self.cpu_controller.lock().unwrap().set_exec_mode(crate::cpu_controller::ExecutionMode::RunTillComplete);
-                    } 
-                });
+                    self.build_control_panel(ui); 
             });
 
             ui.heading("Loaded Program");

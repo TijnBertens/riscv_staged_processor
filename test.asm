@@ -30,16 +30,17 @@ jmp:
 Fibonacci:
 
 start:
-	MVI x1 0		; x1 <- iteration counter
-	MVI x10 10	  ; x10 <- num iterations
+	MVI x1 1		; x1 <- iteration counter (first 2 iterations are skipped)
+	MVI x10 19	  ; x10 <- num iterations
+	MVI x2 0		; x2 <- f_0
+	MVI x3 1		; x3 <- f_1
 
-	MVI x2 0		; x2 <- f_t-2
-	MVI x3 1		; x3 <- f_t-1
 loop:
-	NOP
-	BLT x1 x10 loop
-	ADD x4 x2 x3	; x4 <- f_t
 	ADDI x1 x1 1	; i++
+	ADD x4 x2 x3	; x4 <- f_t
+	BLT x1 x10 loop
+	MV x2 x3		; x2 <- f_t-2
+	MV x3 x4		; x3 <- f_t-1
 	
 end:
 	EXIT
