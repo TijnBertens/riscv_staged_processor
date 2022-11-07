@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use crate::assembler;
+use crate::{assembler, example_programs};
 use crate::assembler::Program;
 use crate::cpu_controller::CPUDebugController;
 use eframe::egui;
@@ -285,6 +285,17 @@ impl CodeEditor {
     pub fn ui(&mut self, ctx: &Context, on_program_load: impl FnOnce(Program)) {
         egui::TopBottomPanel::top("controls").show(&ctx, |ui| {
             ui.horizontal(|ui| {
+                ui.menu_button("Code Book", |ui| {
+                    for (name, program_text) in example_programs::EXAMPLE_PROGRAMS {
+                        if ui.button(*name).clicked() {
+                            self.code = String::from(*program_text);
+                            ui.close_menu();
+                        }
+                    }
+                });
+                
+                ui.separator();
+                
                 if ui.button("assemble").clicked() {
                     let assembler_result = assembler::Program::from_text(self.code.clone());
                     if let Err(error) = assembler_result {
@@ -801,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    // #[ignore]
     fn test_draw_constant_register() {
         struct TestData {
             port_collection: PortCollection,
