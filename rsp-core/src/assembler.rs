@@ -981,7 +981,7 @@ pub fn encode_instruction(
     return Ok(instruction_word);
 }
 
-pub fn parse_label_definition(code_line: &str) -> Result<&str, String> {
+fn parse_label_definition(code_line: &str) -> Result<&str, String> {
     // Trim trailing whitespace
     let code_line = code_line.trim_end();
 
@@ -1010,7 +1010,7 @@ pub fn parse_label_definition(code_line: &str) -> Result<&str, String> {
     return Ok(label_identifier);
 }
 
-pub struct ExplorationPassResult<'a> {
+struct ExplorationPassResult<'a> {
     /// A hashmap mapping labels to instruction indexes
     labels: HashMap<&'a str, usize>,
 
@@ -1022,7 +1022,7 @@ pub struct ExplorationPassResult<'a> {
     exit_points: Vec<usize>
 }
 
-pub struct ExplorationPassError<'a> {
+struct ExplorationPassError<'a> {
     /// The line number of the original program at which the error occurred.
     line_number: usize,
     /// The raw line at which the error occurred.
@@ -1066,7 +1066,7 @@ impl fmt::Debug for ExplorationPassError<'_> {
 }
 
 /// Strips a possible comment from a raw line of program text.
-pub fn strip_comment(raw_line: &str) -> &str {
+fn strip_comment(raw_line: &str) -> &str {
     if let Some((code_part, _)) = raw_line.split_once(';') {
         code_part
     } else {
@@ -1075,7 +1075,7 @@ pub fn strip_comment(raw_line: &str) -> &str {
 }
 
 /// Checks whether a given trimmed instruction line (w/o comment) is an exit point.
-pub fn is_exit_point(instr_line: &str) -> bool {
+fn is_exit_point(instr_line: &str) -> bool {
     instr_line.trim() == "EXIT"
 }
 
@@ -1083,7 +1083,7 @@ pub fn is_exit_point(instr_line: &str) -> bool {
 /// (1) instructions are identified and located, but not parsed,
 /// (2) all labels are identified and their corresponding addresses are determined, and
 /// (3) all exit points are identified.
-pub fn parse_exploration_pass<'a>(
+fn parse_exploration_pass<'a>(
     raw_lines: &Vec<&'a str>,
 ) -> Result<ExplorationPassResult<'a>, ExplorationPassError<'a>> {
     // Variables used in the result
