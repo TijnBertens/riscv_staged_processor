@@ -812,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    // #[ignore]
+    #[ignore]
     fn test_draw_constant_register() {
         struct TestData {
             port_collection: PortCollection,
