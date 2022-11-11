@@ -2,9 +2,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use crate::{assembler, example_programs};
-use crate::assembler::Program;
-use crate::cpu_controller::CPUDebugController;
+use rsp_core::assembler::Program;
+use rsp_core::cpu_controller::{CPUDebugController, ExecutionMode};
+use crate::example_programs;
 use eframe::egui;
 use eframe::egui::{Context, ScrollArea};
 
@@ -210,7 +210,7 @@ impl RunEnvironment {
                 .on_hover_text("Cycle")
                 .clicked()
             {
-                controller.set_exec_mode(crate::cpu_controller::ExecutionMode::SingleCycle);
+                controller.set_exec_mode(ExecutionMode::SingleCycle);
             }
             
             if ui
@@ -218,7 +218,7 @@ impl RunEnvironment {
                 .on_hover_text("Step")
                 .clicked()
             {
-                controller.set_exec_mode(crate::cpu_controller::ExecutionMode::SingleStep);
+                controller.set_exec_mode(ExecutionMode::SingleStep);
             }
             
             if !is_running {
@@ -227,11 +227,11 @@ impl RunEnvironment {
                     .on_hover_text("Complete")
                     .clicked()
                 {
-                    controller.set_exec_mode(crate::cpu_controller::ExecutionMode::RunTillComplete);
+                    controller.set_exec_mode(ExecutionMode::RunTillComplete);
                 }   
             } else {
                 if ui.button("\u{23F8}").on_hover_text("Pause").clicked() {
-                    controller.set_exec_mode(crate::cpu_controller::ExecutionMode::Paused);
+                    controller.set_exec_mode(ExecutionMode::Paused);
                 }
             }
             
@@ -297,7 +297,7 @@ impl CodeEditor {
                 ui.separator();
                 
                 if ui.button("assemble").clicked() {
-                    let assembler_result = assembler::Program::from_text(self.code.clone());
+                    let assembler_result = Program::from_text(self.code.clone());
                     if let Err(error) = assembler_result {
                         self.assembler_output = error;
                     } else {
@@ -305,7 +305,7 @@ impl CodeEditor {
                     }
                 }
                 if ui.button("load").clicked() {
-                    let assembler_result = assembler::Program::from_text(self.code.clone());
+                    let assembler_result = Program::from_text(self.code.clone());
                     if let Err(error) = assembler_result {
                         self.assembler_output = error;
                     } else {
@@ -365,8 +365,8 @@ pub fn run_gui() {
 }
 
 mod component_graphics {
-    use crate::circuit::PortCollection;
-    use crate::components::{ConstantRegister, Mux, RMemory, Register, RegisterFile};
+    use rsp_core::circuit::PortCollection;
+    use rsp_core::components::{ConstantRegister, Mux, RMemory, Register, RegisterFile};
     use eframe::egui;
     use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Shape, Stroke, Vec2};
     use eframe::epaint::{PathShape, RectShape};
@@ -768,8 +768,8 @@ mod component_graphics {
 mod tests {
     use super::component_graphics::*;
     use super::*;
-    use crate::circuit::{PortCollection, PORT_NULL_ID};
-    use crate::components::{Component, ConstantRegister, Mux, RMemory, Register, RegisterFile};
+    use rsp_core::circuit::{PortCollection, PORT_NULL_ID};
+    use rsp_core::components::{Component, ConstantRegister, Mux, RMemory, Register, RegisterFile};
     use std::cell::RefCell;
     use std::rc::Rc;
 
