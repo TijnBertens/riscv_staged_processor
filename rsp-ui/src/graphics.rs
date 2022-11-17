@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread::{self, JoinHandle};
 
 use rsp_core::assembler::Program;
@@ -57,12 +59,19 @@ impl eframe::App for ProcessorGUI {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub struct CPUControllerThread {
     is_killed: Arc<AtomicBool>,
     thread_handle: JoinHandle<()>,
 }
 
+#[cfg(target_arch = "wasm32")]
+/// The standard threading library does not work in wasm32. Therefore, we have to run the cpu controller
+/// in the main thread instead. 
+pub struct CPUControllerThread();
+
 impl CPUControllerThread {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn start_new(controller: Arc<Mutex<CPUDebugController>>) -> Self {
         let is_killed = Arc::new(AtomicBool::new(false));
         
@@ -80,6 +89,11 @@ impl CPUControllerThread {
             is_killed,
             thread_handle
         }
+    }
+    
+    #[cfg(target_arch = "wasm32")]
+    pub fn start_new(_controller: Arc<Mutex<CPUDebugController>>) -> Self {
+        Self()
     }
 }
 
@@ -246,6 +260,21 @@ impl RunEnvironment {
     }
     
     pub fn ui(&mut self, ctx: &Context) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            // I we are running in the web, we dont use a separate thread for running the cpu.
+            // Instead, we manually run a number of cycles on every UI frame.
+            
+            const NUM_CYCLES_PER_FRAME: u32 = 200;
+            let mut controller = self.cpu_controller.lock().unwrap();
+            
+            if controller.is_running() {
+                for _ in 0..NUM_CYCLES_PER_FRAME {
+                    controller.tick();
+                }   
+            }
+        }
+        
         egui::SidePanel::right("state").show(ctx, |ui| {
             ui.heading("Register State");
             ui.separator();
@@ -351,6 +380,7 @@ impl CodeEditor {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_gui() {
     let options = eframe::NativeOptions {
         drag_and_drop_support: true,
@@ -362,6 +392,17 @@ pub fn run_gui() {
         options,
         Box::new(|_cc| Box::new(ProcessorGUI::new())),
     );
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn run_gui() {
+    let options = eframe::WebOptions::default();
+    eframe::start_web(
+        "the_canvas_id", // hardcode it
+        options,
+        Box::new(|_cc| Box::new(ProcessorGUI::new())),
+    )
+    .expect("Failed to start eframe");
 }
 
 mod component_graphics {
@@ -765,6 +806,7 @@ mod component_graphics {
 }
 
 #[allow(unused_imports)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::component_graphics::*;
     use super::*;
