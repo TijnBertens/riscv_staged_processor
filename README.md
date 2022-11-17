@@ -3,7 +3,7 @@
 This project contains a component-based emulator for a 5-stage pipelined RISC-V processor written in Rust. Its purpose is mostly to be an educational tool by showing how instructions flow
 through a pipelined processor, but the project has also served as an exercise using the Rust programming language. The design of the processor is based on the excellent 2017 book "*Computer Architecture: A Quantitative Approach*" by *Henessy* and *Patterson* (Sixth Edition).
 
-This project currently provides a functional CPU and accompanying assembler. Furthermore, a primitive interface is available for writing programs, assembling them, and executing them on the CPU, though it is in a very early stage. The UI is written in native Rust using [EGUI](https://github.com/emilk/egui).
+This project currently provides a functional CPU and accompanying assembler. Furthermore, a primitive interface is available for writing programs, assembling them, and executing them on the CPU, though it is in a very early stage. The UI is written in native Rust using [EGUI](https://github.com/emilk/egui). A version of the project compiled to web assembly (running in your browser) is available [online](https://tijnbertens.github.io/riscv_staged_processor/).
 
 # The Instruction Set
 The instruction set implemented in this processor is based on the [RISC-V ISA](https://riscv.org/wp-content/uploads/2017/05/riscv-spec-v2.2.pdf). Or, more specifically, on the *RV32I Base Integer Instruction Set*. There are a number of key design choices that characterize RISC-V.
